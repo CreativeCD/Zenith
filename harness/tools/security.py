@@ -1,0 +1,77 @@
+"""harness/tools/security.py — Path Validation & Subprocess Command Security Guards.
+
+Reference: PRD.md §4.3.4, §13.2 | architecture.md §18
+Enforces zero path traversal outside repo root and blocks forbidden dangerous command patterns.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import List
+
+# 12 Forbidden command patterns as specified in PRD §4.3.4 (hardened against evasion)
+BLOCKED_PATTERNS: List[str] = [
+    r"\brm\b(?=.*-[a-zA-Z-]*r)(?=.*-[a-zA-Z-]*f).*\s+[\"']?(?:/(?:\S*|$)|~|\$HOME)",  # Recursive delete on root, home, or absolute paths
+    r"\|\s*(?:\S*/)?(?:sh|bash|zsh|dash|ksh)\b",  # Pipe to shell (including /bin/sh, /usr/bin/bash, zsh, dash, ksh)
+    r"\bsudo\b",                     # Privilege escalation
+    r"chmod\s+[0-7]*7[0-7]{2}",      # World-writable permission grant
+    r"\bcurl\b",                     # Outbound network access
+    r"\bwget\b",                     # Outbound network access
+    r"\bdd\b",                       # Low-level disk writer
+    r"\bmkfs\b",                     # Filesystem formatting
+    r">\s*[\"']?/dev/(?:sd|hd|vd|nvme)",  # Raw block device write (handles quotes, modern disk names)
+    r":\(\)\s*\{.*:\|:&\s*\};:|:\(\)\{.*\|.*&.*\}",  # Fork bomb
+    r"base64.*\|.*(?:sh|bash|zsh|dash|ksh)",      # Obfuscated shell execution
+]
+
+PATH_TRAVERSAL_REGEX = re.compile(r"(^|[/\\])\.\.([/\\]|$)")
+
+
+class SecurityError(Exception):
+    """Raised when an operation violates harness security policies."""
+    pass
+
+
+def validate_path(file_path: str, repo_root: str) -> Path:
+    """Validate that a target file path resides strictly inside repo_root.
+    
+    Raises:
+        ValueError: If path attempts directory traversal or points outside repo_root.
+    """
+    if not file_path or not str(file_path).strip():
+        raise ValueError("File path cannot be empty.")
+
+    clean_path = str(file_path).strip()
+
+    # Check for directory traversal tokens (platform-independent)
+    if PATH_TRAVERSAL_REGEX.search(clean_path) or any(part == ".." for part in Path(clean_path).parts):
+        raise ValueError(f"Path traversal detected in path: '{file_path}'")
+
+    root = Path(repo_root).resolve()
+    target = (root / clean_path).resolve()
+
+    try:
+        # Check if target is relative to root
+        target.relative_to(root)
+    except ValueError:
+        raise ValueError(f"Target path '{file_path}' points outside repository root '{repo_root}'.")
+
+    return target
+
+
+def check_command_blocklist(command: str) -> None:
+    """Inspect shell command against the 12 security blocklist patterns.
+    
+    Raises:
+        SecurityError: If command matches any blocked pattern.
+    """
+    if not command:
+        return
+
+    cmd_normalized = command.strip()
+    for pattern in BLOCKED_PATTERNS:
+        if re.search(pattern, cmd_normalized, flags=re.IGNORECASE):
+            raise SecurityError(
+                f"Command blocked by security policy: matches pattern '{pattern}'"
+            )

@@ -168,10 +168,10 @@ zenith/
 - **Function-calling schema:** Pydantic models → `model.model_json_schema()` for tool definitions.
 
 ### P1 Exit Criteria
-- [ ] All 14 tool implementations pass unit tests (100% pass rate)
-- [ ] All 3 guard layers (dedup, reasoning, path) pass unit tests
-- [ ] All 12 blocklist patterns blocked correctly in sandbox
-- [ ] Single-turn E2E: reads file → patches → runs test → exit code 0
+- [x] All 14 tool implementations pass unit tests (100% pass rate)
+- [x] All 3 guard layers (dedup, reasoning, path) pass unit tests
+- [x] All 12 blocklist patterns blocked correctly in sandbox
+- [x] Single-turn E2E: reads file → patches → runs test → exit code 0
 
 ---
 

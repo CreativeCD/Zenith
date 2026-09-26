@@ -109,6 +109,9 @@ class TelemetryWriter:
         if self.stream_to_stdout:
             self._print_stream(event)
 
+    # Convenience alias for append
+    record = append
+
     def _print_stream(self, event: TelemetryEvent) -> None:
         """Pretty-print event to stdout for real-time monitoring."""
         timestamp = event.timestamp.strftime("%H:%M:%S") if isinstance(event.timestamp, datetime) else str(event.timestamp)
