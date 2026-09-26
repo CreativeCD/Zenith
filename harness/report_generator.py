@@ -177,14 +177,20 @@ class ReportGenerator:
             v_rows = []
             for p_name, p_res in verification_data["phases"].items():
                 p_stat = p_res.get("status", "PASS")
-                icon = "✅ PASS" if p_stat == "PASS" else "❌ FAIL"
+                if hasattr(p_stat, "value"):
+                    p_stat = p_stat.value
+                icon = "✅ PASS" if str(p_stat).upper() in ("PASS", "SUCCESS") else "❌ FAIL"
                 det = str(p_res.get("detail", p_res.get("errors", "")))
                 v_rows.append(f"| {p_name} | {icon} | {det} |")
             verification_table = "\n".join(v_rows)
         elif verification_phases:
             v_rows = []
             for p_name, p_info in verification_phases.items():
-                v_rows.append(f"| {p_name} | {p_info['status']} | {p_info['detail']} |")
+                p_s = p_info.get("status", "PASS")
+                if hasattr(p_s, "value"):
+                    p_s = p_s.value
+                icon = "✅ PASS" if str(p_s).upper() in ("PASS", "SUCCESS") else "❌ FAIL"
+                v_rows.append(f"| {p_name} | {icon} | {p_info.get('detail', '')} |")
             verification_table = "\n".join(v_rows)
         else:
             verification_table = (
