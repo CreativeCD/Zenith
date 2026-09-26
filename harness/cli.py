@@ -100,6 +100,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="harness_config.yaml",
         help="Path to harness YAML configuration file",
     )
+    parser.add_argument(
+        "-i",
+        "--interactive",
+        action="store_true",
+        help="Launch interactive Claude Code style terminal REPL",
+    )
 
     return parser
 
@@ -121,6 +127,11 @@ def main(args_list: list[str] | None = None) -> int:
     except (OSError, ValueError, KeyError, TypeError) as e:
         print(f"Error loading configuration: {e}", file=sys.stderr)
         return 1
+
+    # Check for interactive REPL mode
+    if getattr(args, "interactive", False):
+        from harness.interactive import launch_interactive_repl
+        return launch_interactive_repl(config=config)
 
     # Initialize Telemetry
     telemetry = TelemetryWriter(
@@ -198,7 +209,33 @@ def main(args_list: list[str] | None = None) -> int:
 
     orchestrator = Orchestrator(config=config)
     session_result = orchestrator.run(issue_text=issue_content)
-    print(f"Zenith harness run finished: {session_result.status.value} (Exit: {session_result.exit_code}, Steps: {session_result.total_steps}).")
+
+    print("\n" + "=" * 65)
+    is_success = session_result.status.value in ("DONE", "SUCCESS", "PASS")
+    icon = "✅" if is_success else "❌"
+    print(f"  {icon} ZENITH AI RUN COMPLETED: {session_result.status.value} (Exit: {session_result.exit_code})")
+    print("=" * 65)
+    print(f"  • Steps Taken  : {session_result.total_steps}")
+    print(f"  • Tokens Used  : {session_result.total_tokens:,}")
+    print(f"  • Total Cost   : ${session_result.total_cost_usd:.4f} USD")
+    print(f"  • Duration     : {session_result.total_wall_time_ms / 1000:.1f}s")
+
+    v_res = session_result.verification_result
+    if v_res and hasattr(v_res, "phases") and v_res.phases:
+        print("\n  📋 Verification Gates:")
+        for phase_name, p_res in v_res.phases.items():
+            stat = getattr(p_res, "status", "PASS")
+            if hasattr(stat, "value"):
+                stat = stat.value
+            pass_icon = "✅ PASS" if str(stat).upper() in ("PASS", "SUCCESS") else "❌ FAIL"
+            detail = getattr(p_res, "detail", "") or getattr(p_res, "errors", "")
+            print(f"    • {phase_name:<12}: {pass_icon} — {detail}")
+
+    report_path = Path(config.telemetry.output_dir) / "report.md"
+    if report_path.exists():
+        print(f"\n  📄 Execution Report: {report_path.resolve()}")
+    print("=" * 65 + "\n")
+
     return session_result.exit_code
 
 

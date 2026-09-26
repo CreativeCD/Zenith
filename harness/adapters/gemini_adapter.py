@@ -176,7 +176,7 @@ class GeminiAdapter:
     async def complete(
         self,
         system_prompt: str,
-        user_message: str,
+        user_message: str = "",
         tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.0,
         max_output_tokens: int = 65536,
@@ -184,6 +184,8 @@ class GeminiAdapter:
         seed: int | None = 42,
         max_retries: int = 4,
         reasoning_effort: str = "low",
+        history: list[dict[str, str]] | None = None,
+        **kwargs: Any,
     ) -> ModelResponse:
         """Execute chat completion with multi-key rotation, model cascade fallback, and continuation."""
         start_time = time.perf_counter()
@@ -219,9 +221,18 @@ class GeminiAdapter:
                 config_kwargs["automatic_function_calling"] = types.AutomaticFunctionCallingConfig(disable=True)
 
             generate_config = types.GenerateContentConfig(**config_kwargs)
-            contents = [
-                types.Content(role="user", parts=[types.Part(text=user_message)])
-            ]
+            if history:
+                contents = []
+                for msg in history:
+                    r = msg.get("role", "user")
+                    c_role = "user" if r in ("user", "human") else "model"
+                    contents.append(types.Content(role=c_role, parts=[types.Part(text=msg.get("content", msg.get("text", "")))]))
+                if user_message:
+                    contents.append(types.Content(role="user", parts=[types.Part(text=user_message)]))
+            else:
+                contents = [
+                    types.Content(role="user", parts=[types.Part(text=user_message)])
+                ]
 
             # Try each key in pool for this model
             for attempt in range(total_keys):

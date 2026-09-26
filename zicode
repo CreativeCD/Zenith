@@ -19,11 +19,14 @@ if [[ "$1" == "-h" || "$1" == "--help" ]]; then
   echo "  ╚══════════════════════════════════════╝"
   echo ""
   echo "  Usage:"
-  echo "    zicode                          Run on current dir with issue.txt"
-  echo "    zicode /path/to/repo            Custom repo, uses ./issue.txt"
-  echo "    zicode /path/to/repo issue.txt  Custom repo and issue file"
+  echo "    zicode                          Launch interactive Claude Code style REPL"
+  echo "    zicode -i                       Launch interactive REPL on current directory"
+  echo "    zicode /path/to/repo -i         Launch interactive REPL on any cloned repo"
+  echo "    zicode \"issue description\"      Run on current dir with inline issue"
+  echo "    zicode issue.txt                Run batch SWE-bench harness on issue file"
+  echo "    zicode /path/to/repo issue.txt  Run batch SWE-bench harness on custom repo"
+  echo "    zicode --report                 Display latest execution report"
   echo "    zicode --dry                    Dry-run (no API calls)"
-  echo "    zicode --verbose                Show live token/cost stream"
   echo "    zicode -h                       This help message"
   echo ""
   echo "  Output: .harness/report.md, .harness/telemetry.jsonl"
@@ -33,12 +36,23 @@ fi
 
 # ── Parse args ───────────────────────────────────────────────────────────────
 REPO_PATH="."
-ISSUE_PATH="issue.txt"
-EXTRA_FLAGS=("--verbose")
-POSITIONAL=0
+INTERACTIVE_MODE=0
+[[ $# -eq 0 ]] && INTERACTIVE_MODE=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    -i|--interactive)
+      INTERACTIVE_MODE=1
+      shift
+      ;;
+    --report)
+      if [[ -f "$ZENITH_HOME/.harness/report.md" ]]; then
+        cat "$ZENITH_HOME/.harness/report.md"
+      else
+        echo "No report found at $ZENITH_HOME/.harness/report.md"
+      fi
+      exit 0
+      ;;
     --dry)
       EXTRA_FLAGS+=("--dry-run")
       shift
@@ -65,8 +79,13 @@ while [[ $# -gt 0 ]]; do
       ;;
     *)
       if [[ $POSITIONAL -eq 0 ]]; then
-        REPO_PATH="$1"
-        POSITIONAL=1
+        if [[ -d "$1" ]]; then
+          REPO_PATH="$1"
+          POSITIONAL=1
+        else
+          ISSUE_PATH="$1"
+          POSITIONAL=2
+        fi
       elif [[ $POSITIONAL -eq 1 ]]; then
         ISSUE_PATH="$1"
         POSITIONAL=2
@@ -77,6 +96,10 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ $INTERACTIVE_MODE -eq 1 ]]; then
+  EXTRA_FLAGS+=("--interactive")
+fi
 
 # ── Load .env secrets ────────────────────────────────────────────────────────
 if [[ -f "$ZENITH_HOME/.env" ]]; then
@@ -89,14 +112,16 @@ fi
 KEY_COUNT=$(grep -c -E '^AI_API_KEY(_[0-9]+)?=' "$ZENITH_HOME/.env" 2>/dev/null || echo "1")
 
 # ── Run ──────────────────────────────────────────────────────────────────────
-echo ""
-echo "  ⚡ zicode → Zenith AI Engine"
-echo "  Model : gemini-3.5-flash-lite (cascade: 3.5-flash → 3.6-flash)"
-echo "  Pool  : $KEY_COUNT active keys (~$(( KEY_COUNT * 15 )) RPM capacity)"
-echo "  Repo  : $REPO_PATH"
-echo "  Issue : $ISSUE_PATH"
-[[ ${#EXTRA_FLAGS[@]} -gt 0 ]] && echo "  Flags : ${EXTRA_FLAGS[*]}"
-echo ""
+if [[ $INTERACTIVE_MODE -eq 0 ]]; then
+  echo ""
+  echo "  ⚡ zicode → Zenith AI Engine (Batch Mode)"
+  echo "  Model : gemini-3.5-flash-lite (cascade: 3.5-flash → 3.6-flash)"
+  echo "  Pool  : $KEY_COUNT active keys (~$(( KEY_COUNT * 15 )) RPM capacity)"
+  echo "  Repo  : $REPO_PATH"
+  echo "  Issue : $ISSUE_PATH"
+  [[ ${#EXTRA_FLAGS[@]} -gt 0 ]] && echo "  Flags : ${EXTRA_FLAGS[*]}"
+  echo ""
+fi
 
 cd "$ZENITH_HOME" && "$PYTHON" -m harness.cli \
   --repo "$REPO_PATH" \
