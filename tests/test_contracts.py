@@ -1,6 +1,7 @@
 """Unit tests for harness/contracts.py."""
 
 import json
+
 from harness.contracts import (
     AgentPhase,
     Complexity,

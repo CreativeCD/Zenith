@@ -31,7 +31,7 @@ class ModelConfig:
     max_output_tokens: int = 4096
     enable_thinking: bool = False
     use_structured_output: bool = True
-    api_key: str | None = None
+    api_key: str | None = field(default=None, repr=False)
 
 
 @dataclass
@@ -84,7 +84,7 @@ class ExternalSkillsConfig:
     prefetch_at_startup: bool = True
     swebench_index_path: str = ".harness/swebench_index"
     github_api_token_env: str = "GITHUB_TOKEN"
-    github_token: str | None = None
+    github_token: str | None = field(default=None, repr=False)
 
 
 @dataclass
@@ -135,10 +135,10 @@ class HarnessConfig:
         """Validate paths, boundaries, and required environment credentials."""
         # API Key check (unless dry_run)
         if not self.dry_run and not self.model.api_key:
-            api_key = os.environ.get("AI_API_KEY")
+            api_key = (os.environ.get("AI_API_KEY") or "").strip()
             if not api_key:
                 raise OSError(
-                    "AI_API_KEY environment variable is not set. "
+                    "AI_API_KEY environment variable is not set or empty. "
                     "Define AI_API_KEY in your environment or .env file."
                 )
             self.model.api_key = api_key

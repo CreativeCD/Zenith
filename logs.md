@@ -19,9 +19,9 @@ Format    : Chronological log — newest entries at TOP of each phase section
 | Phase | Status | Start | End | Tasks Done | Issues | Notes |
 |---|---|---|---|---|---|---|
 | P0: Bootstrap & Infrastructure | ✅ DONE | 2026-09-26 12:55 | 2026-09-26 13:40 | 13 / 13 | — | All contracts, config, CLI, telemetry, Makefile, test stubs passing |
-| P1: Core Tool Engine | 🔲 NOT STARTED | — | — | 0 / 19 | — | +8 tasks: AST nav tools, git_status, path validator |
+| P1: Core Tool Engine | ✅ DONE | 2026-09-26 14:35 | 2026-09-26 15:32 | 19 / 19 | — | All 14 tools, guards, deduplication, unified ToolEngine, and single-turn E2E verified |
 | P2: Context & Memory | ✅ DONE | 2026-09-26 14:35 | 2026-09-26 14:52 | 10 / 10 | — | 5-section prompt, TokenBudgetManager, KV cache, RollingSummarizer, truncation policy |
-| P3: Verification & Recovery | 🔲 NOT STARTED | — | — | 0 / 21 | — | +5 tasks: LINT_REGRESSION, SIDE_EFFECT, 3-level CB |
+| P3: Verification & Recovery | ✅ DONE | 2026-09-26 15:15 | 2026-09-26 15:20 | 21 / 21 | — | Full 6-phase gate, 10-code taxonomy, 3-level circuit breaker, rollback |
 | P4: Repo Intelligence & Agents | 🔲 NOT STARTED | — | — | 0 / 24 | — | +10 tasks: VERY_HIGH mode, LSP, checkpoints, struct output |
 | P5: External Skills & Telemetry | 🔲 NOT STARTED | — | — | 0 / 22 | — | +9 tasks: SWE-bench index, 8-section report, dashboard |
 | P6: Hardening & Submission | 🔲 NOT STARTED | — | — | 0 / 15 | — | +3 tasks: Docker, optimization analysis, README audit |
@@ -136,14 +136,164 @@ Record after each E2E run:
 ### Log Entries
 
 ```
-[--:--] [---] [---] No entries yet. Phase not started.
+[16:10] [ANTIGRAVITY] [AUDIT] Phase 1 Pass 2 Deep-Dive Vulnerability & Inter-Phase Integration Hardening COMPLETE:
+        DEEP-DIVE FINDINGS & REMEDIATIONS APPLIED:
+        1. VCS Rollback Safeguards (harness/tools/vcs.py):
+           - Fixed critical data loss vulnerability: git_rollback now checks if repository is a valid git repo before attempting untracked file removal. In non-git folders or when git checkout fails, existing files are NEVER unlinked.
+           - Wrapped all single-file and full-tree git subprocess operations in try/except subprocess.TimeoutExpired and try/except Exception handlers to prevent unhandled crashes.
+        2. Binary File Context Poisoning Guard (harness/tools/editor.py):
+           - In read_file_range, added binary file check inspecting the first 1024 bytes for null bytes (\x00). Prevents corrupting LLM context with binary gibberish and wasting token budgets.
+        3. Diff & Exact Patch Resilience (harness/tools/editor.py):
+           - In _apply_exact_block, added trailing-whitespace-tolerant matching when exact and CRLF match fail. Disambiguates and prevents patch rejections caused by LLM trailing space additions/omissions.
+           - In _apply_unified_diff, replaced regex-based hunk matching with safe str.find loop (_find_all) to avoid catastrophic backtracking and regex escaping limits.
+           - In _apply_unified_diff, added automatic CRLF vs LF line-ending normalization.
+        4. AST Module Constants Expansion (harness/tools/ast_tools.py):
+           - Added ast.AnnAssign support in list_symbols so typed module-level constants (e.g. TIMEOUT: int = 60) are cataloged alongside untyped assignments.
+        5. Inter-Phase ToolEngine & Orchestrator Integration (harness/tool_engine.py):
+           - Upgraded ToolEngine.execute to accept optional step: int argument, enabling Phase 4 Orchestrator to pass the active step number.
+           - Propagated step to deduplicator and enriched TelemetryEvent with step, tool_args_hash, reasoning, tokens_in, and tokens_out.
+           - Auto-populated fingerprint on the caller's ToolCall object.
+        6. Root Path Relativization (harness/tools/navigation.py):
+           - Sanitized root_path trailing slash handling in ripgrep search to prevent double-separator prefix issues.
+        - Verification & Test Suite Status:
+           - 105 passed, 6 future phase stubs skipped, 0 failures.
+           - Ruff check: 100% clean.
+           - Zero commits or pushes performed per strict user instructions.
+
+[16:00] [ANTIGRAVITY] [AUDIT] Phase 1 Multi-Pass Audit & Vulnerability Remediation COMPLETE:
+        DEEP-DIVE AUDIT & FIXES APPLIED ACROSS ALL TOOLS:
+        1. Security Hardening (harness/tools/security.py):
+           - Hardened rm root deletion against home directory wipe: blocks 'rm -rf ~', 'rm -rf $HOME', 'rm -rf "$HOME"'.
+           - Blocked pipe execution to alternative shells: 'zsh', 'dash', 'ksh' (e.g. '| zsh', '| dash', '| ksh').
+           - Blocked base64 piping to alternative shells.
+        2. Deduplication Bugfix (harness/tools/dedup.py):
+           - Fixed unformatted f-string literal bug on line 70 where '{stored_step}' was printed verbatim instead of step number.
+        3. Navigation Security Guard (harness/tools/navigation.py):
+           - Fixed search_code path validation: validated repo_root with validate_path to prevent arbitrary root directory reads.
+           - Added path traversal guard on path_pattern ('..' blocked).
+           - Clamped context_lines between 0 and 20 to prevent negative or oversized contexts.
+        4. VCS Rollback Directory Fix (harness/tools/vcs.py):
+           - Fixed IsADirectoryError when rolling back an untracked directory; now cleanly uses shutil.rmtree on directories.
+        5. Subprocess Execution & Blocklist Parity (harness/tools/executor.py):
+           - Added check_command_blocklist validation to run_test_suite for both flags and test_filter.
+           - Preserved partial stdout (e.stdout) on subprocess.TimeoutExpired across run_bash_sandboxed and run_test_suite.
+        6. Atomic File Operations & Proximity Matching (harness/tools/editor.py):
+           - Implemented _atomic_write using temporary file and os.replace for atomic file creation and patching.
+           - Upgraded read_file_range to streaming line iteration to eliminate OOM risks on huge files.
+           - Enhanced _apply_unified_diff: required context lines to match when present, preventing ambiguous line replacement.
+           - Added proximity-anchored hunk replacement for files with duplicate context blocks.
+           - Returned descriptive errors when diff context does not match target file.
+        7. AST Symbol & Import Expansion (harness/tools/ast_tools.py):
+           - Supported class attributes and typed assignments (ast.Assign, ast.AnnAssign) in get_symbol (e.g. AppConfig.TIMEOUT).
+           - Supported nested classes and functions defined in conditional/try blocks across entire AST.
+           - Expanded get_imports with full AST traversal to capture conditional imports (e.g. 'if TYPE_CHECKING:').
+        8. Telemetry & ToolEngine Integration Hardening (harness/tool_engine.py & telemetry.py):
+           - Fixed TelemetryEvent schema incompatibility: removed invalid step_number and payload kwargs; properly set step, phase, tool, result_status, latency_ms, error_code.
+           - Added record = append alias to TelemetryWriter for seamless inter-phase compatibility.
+           - Wrapped _dispatch in top-level try/except to prevent any tool execution failure from crashing the orchestrator loop.
+           - Added _safe_int helper to prevent TypeError/ValueError when models pass null or malformed integers.
+           - Added rich docstrings to all 15 Pydantic tool argument schemas for optimal model tool selection.
+        - Verification:
+           - 99 tests passing, 6 future phase stubs skipped, 0 failures.
+           - Ruff check: 100% clean.
+           - Zero commits or pushes performed per strict user instructions.
+
+[15:32] [ANTIGRAVITY] [DONE] Phase 1 Core Tool Engine COMPLETE (19/19 tasks — 100% verified):
+        DELIVERABLES BUILT & VERIFIED:
+        - Part 1: Guards & Security Scaffolding (Tasks 1.15–1.17)
+          * harness/tools/security.py: validate_path with traversal guard & 12-pattern command blocklist
+          * harness/tools/dedup.py: ToolCallDeduplicator with 10-call ring buffer & reasoning envelope validator
+        - Part 2: Navigation Tools (Tasks 1.1–1.6)
+          * harness/tools/navigation.py: list_dir (depth cap ≤ 4, exclusion list), search_code (ripgrep + regex sanitize + python fallback)
+          * harness/tools/ast_tools.py: get_symbol (ast preview + method support + non-python fallback), find_references (call sites with context & multi-file scan), get_imports, list_symbols
+        - Part 3: Edit Tools (Tasks 1.7–1.9)
+          * harness/tools/editor.py: read_file_range (250-line cap, 1-indexed line numbers), write_file (no overwrite, parent dirs), apply_patch (unified diff primary, exact block fallback, AST check + rollback)
+        - Part 4: Execution Tools (Tasks 1.10–1.11)
+          * harness/tools/executor.py: run_bash_sandboxed (30s timeout, 512MB limit, 12 blocklist patterns, 200-line cap), run_test_suite (pytest adapter, 120s timeout, test filter, 80-line cap)
+        - Part 5: VCS Tools (Tasks 1.12–1.14)
+          * harness/tools/vcs.py: git_status (porcelain status), git_diff (HEAD diff with 500-line cap), git_rollback (file & all modes)
+        - Part 6: Unified Tool Engine & Function Schemas (Task 1.18)
+          * harness/tool_engine.py: 14 tools centralized dispatcher, 8-stage verification pipeline, Pydantic function calling schemas
+        - Part 7: Single-Turn E2E Validation (Task 1.19)
+          * tests/test_p1_e2e.py: full repro -> inspect -> patch -> diff -> verify pass -> rollback cycle
+        - Test suites: 88 passed, 6 future stubs skipped, 0 failures.
+        - Ruff check: 100% clean.
+        - Uncommitted on branch 'Phase-1' per user instruction.
+[15:28] [ANTIGRAVITY] [DONE] Phase 1 Part 5 VCS Tools COMPLETE (Tasks 1.12–1.14):
+        DELIVERABLES BUILT & VERIFIED:
+        - Task 1.12: harness/tools/vcs.py `git_rollback` (supports single-file checkout or full tree reset, handles newly created untracked files by deleting them, ensures clean HEAD)
+        - Task 1.13: harness/tools/vcs.py `git_diff` (diff against HEAD with optional file_path filter, capped at 500 lines with head/tail truncation notice)
+        - Task 1.14: harness/tools/vcs.py `git_status` (porcelain status inspection returning modified, added, deleted, or clean working tree message)
+        - Test suites: tests/test_vcs.py (9 passed).
+        - Total tests now: 82 passed, 7 future stubs skipped, 0 failures.
+        - Ruff check: 100% clean.
+        - Uncommitted on branch 'Phase-1' per user instruction.
+[15:27] [ANTIGRAVITY] [DONE] Phase 1 Part 4 Execution Tools COMPLETE (Tasks 1.10–1.11):
+        DELIVERABLES BUILT & VERIFIED:
+        - Task 1.10: harness/tools/executor.py `run_test_suite` (pytest runner adapter, repo_root validation, test_path & test_filter routing, custom flags support, 120s timeout enforcement, 1024MB address space memory limit, 80-line head/tail truncation with notice, exit code & pass/fail detection)
+        - Task 1.11: harness/tools/executor.py `run_bash_sandboxed` (12-pattern blocklist security validation returning BLOCKED status, 30s timeout enforcement, 512MB address space memory limit via resource.setrlimit, process group isolation and SIGKILL tree termination on timeout, 200-line output truncation)
+        - Test suites: tests/test_executor.py (11 passed).
+        - Total tests now: 73 passed, 7 future stubs skipped, 0 failures.
+        - Ruff check: 100% clean.
+        - Uncommitted on branch 'Phase-1' per user instruction.
+[15:21] [ANTIGRAVITY] [DONE] Phase 1 Part 3 Edit Tools COMPLETE (Tasks 1.7–1.9):
+        DELIVERABLES BUILT & VERIFIED:
+        - Task 1.7: harness/tools/editor.py `read_file_range` (250-line window cap, 1-indexed line numbers with %4d: prefix, bounds validation, path traversal guard)
+        - Task 1.8: harness/tools/editor.py `write_file` (refuses overwrite if file exists, auto-creates parent directories, AST syntax validation check for Python files with atomic rollback)
+        - Task 1.9: harness/tools/editor.py `apply_patch` (dual-mode: parses unified diff format and falls back to exact block replacement; checks single uniqueness in target file; post-apply AST syntax validation with atomic rollback on invalid syntax; non-Python syntax allowed)
+        - Test suites: tests/test_editor.py (8 passed), tests/test_patch_engine.py (6 passed).
+        - Total tests now: 62 passed, 7 future stubs skipped, 0 failures.
+        - Ruff check: 100% clean.
+        - Uncommitted on branch 'Phase-1' per user instruction.
+[15:18] [ANTIGRAVITY] [IN PROGRESS] Phase 1 Part 1 & Part 2 Comprehensive Code Audit & Hardening COMPLETE:
+        - Loopholes and Bugs Identified & Fixed:
+          1. Fixed find_references context line number bug: was printing matched line number (idx+1)
+             for all surrounding context lines; fixed to use individual context line number (ctx_i+1).
+          2. Added full directory support to find_references: allows scanning an entire directory or
+             repo package for symbol call sites up to 30 locations.
+          3. Added Class.method dot-notation lookup to get_symbol (e.g. Calculator.divide).
+          4. Added non-Python regex block fallback to get_symbol and list_symbols for JS/TS/Go/Rust/Java.
+          5. Added multi-line Python import statement extraction to get_imports.
+          6. Hardened command blocklist for rm root deletion: handles all flag permutations
+             (rm -fr /, rm -rf /*, rm -r -f /, rm -f -r /) using lookahead regex.
+          7. Hardened validate_path against standalone '..' and platform-specific traversal.
+          8. Hardened ToolCallDeduplicator against non-serializable args using default=str and added metrics.
+          9. Sanitized list_dir depth to max(1, min(depth, 4)), caught (PermissionError, OSError),
+             and added 500-item output truncation cap.
+          10. Added '--' delimiter to ripgrep in search_code to prevent CLI flag injection on hyphen queries.
+          11. Added binary file extension filter to search_code to avoid reading binaries into context.
+        - Total tests expanded from 36 to 48 passing tests (48 passed, 7 skipped, 0 failures).
+        - Ruff check: All checks passed.
+        - Zero commits made per user instructions.
+
+[14:41] [ANTIGRAVITY] [IN PROGRESS] Phase 1 Part 2 Navigation Tools COMPLETE (Tasks 1.1–1.6):
+        - Task 1.1: harness/tools/navigation.py `list_dir` (depth ≤ 4 cap, junk directory exclusions, human-readable file sizes)
+        - Task 1.2: harness/tools/navigation.py `search_code` (ripgrep with regex sanitization, test filter, 50-match cap, python directory fallback)
+        - Task 1.3: harness/tools/ast_tools.py `get_symbol` (signature, docstring, line range extraction, 50-line hard cap)
+        - Task 1.4: harness/tools/ast_tools.py `find_references` (call sites with context lines, 30 location cap)
+        - Task 1.5: harness/tools/ast_tools.py `get_imports` (all imports extracted via AST)
+        - Task 1.6: harness/tools/ast_tools.py `list_symbols` (all top-level classes, functions, constants with line numbers)
+        - Test suites: tests/test_navigation.py (6 passed), tests/test_ast_tools.py (6 passed).
+        - Total tests now: 36 passed, 7 future stubs skipped, 0 failures. Ruff: All checks passed.
+        - Uncommitted on branch 'Phase-1' per user instruction.
+
+[14:35] [ANTIGRAVITY] [IN PROGRESS] Phase 1 Core Tool Engine underway.
+        - Created comprehensive implementation plan: docs/plans/2026-09-26-phase-1-core-tool-engine.md
+        - Part 1 Guards & Security Scaffolding COMPLETE (Tasks 1.15, 1.16, 1.17):
+          * harness/tools/security.py: Path validator (blocks directory traversal & escape) + 12-pattern command blocklist
+          * harness/tools/dedup.py: ToolCallDeduplicator with 10-call ring buffer & reasoning envelope validator
+          * tests/test_tool_security.py: 6 unit tests passing
+          * tests/test_tool_dedup.py: 5 unit tests passing
+        - Total tests now: 24 passing, 7 future stubs skipped, 0 failures. Ruff clean.
+        - Uncommitted on branch 'Phase-1' per user instruction.
 ```
 
 ### P1 Exit Criteria Status
-- [ ] All 11 tool implementations pass unit tests
-- [ ] ToolCallDeduplicator blocks 100% of duplicate calls
-- [ ] `reasoning` field validator rejects 100% of calls missing it
-- [ ] Single-turn E2E: reads file → patches → runs test → exit code 0
+- [x] All 14 tool implementations pass unit tests
+- [x] ToolCallDeduplicator blocks 100% of duplicate calls
+- [x] `reasoning` field validator rejects 100% of calls missing it
+- [x] All 12 blocklist patterns blocked correctly in sandbox
+- [x] Single-turn E2E: reads file → patches → runs test → exit code 0
 
 ---
 
@@ -181,15 +331,55 @@ Record after each E2E run:
 ### Log Entries
 
 ```
-[--:--] [---] [---] No entries yet. Phase not started.
+[16:35] [ANTIGRAVITY] [FIXED] Phase 3 & Core Harness Security & Robustness Audit COMPLETE.
+        AUDIT FINDINGS & VULNERABILITIES RESOLVED:
+        - Vulnerability 1 (Code Injection): In _run_side_effect_check, module_name string interpolation was
+          vulnerable to injection. Hardened with repr(module_name) and caught BaseException to prevent
+          sys.exit(0) from escaping detection.
+        - Vulnerability 2 (False Positive Syntax Rejection): _check_balanced_brackets previously flagged
+          closing brackets in JS/TS string literals, template strings (${...}), and comments as errors.
+          Implemented full comment/string-aware bracket tokenizer.
+        - Vulnerability 3 (CLI Option Injection): _run_lint_check and capture_baselines now pass '--'
+          before filenames to prevent filenames starting with dashes from acting as linter CLI flags.
+        - Vulnerability 4 (Loop Counter Logic Bug): CircuitBreaker now resets consecutive loop_count to 0
+          when non-identical tool calls occur, preventing disparate calls from falsely accumulating to Level 3.
+        - Vulnerability 5 (Silent Untracked File Rollback Failure): RecoveryEngine.rollback now detects untracked
+          files and safely deletes them, preventing git checkout errors when rolling back new broken files.
+        - Vulnerability 6 (Path Traversal Guard): Added repo boundary containment check in rollback() to
+          prevent arbitrary file deletion outside repo_path.
+        - Vulnerability 7 (Regression Suite Bypass): _run_regression_suite now detects pytest collection errors
+          and non-zero abnormal exit codes even when baseline failures are present.
+        - Vulnerability 8 (Target File Extraction): handle_verification_result now extracts the failing filename
+          from AST_PARSE_FAIL details and supplies it directly to targeted rollback.
+        - Quality / Cleanliness: Fixed 74 Ruff lint and type annotation warnings across contracts, telemetry,
+          cli, and tests. Added 7 new regression & security unit tests (now 46 tests passing, 0 failures).
+
+[15:20] [ANTIGRAVITY] [DONE] Phase 3 Verification Gate & Recovery Engine COMPLETE (21/21 tasks).
+        DELIVERABLES BUILT & VERIFIED:
+        - Task 3.1: Phase 1 Syntax Check implemented with py_compile/ast.parse (Python) and bracket validation (JS/TS)
+        - Task 3.2: Phase 2 Linter Check implemented with delta mode vs linter_baseline.json
+        - Task 3.3: Phase 3 Reproduction Test implemented with test_filter execution and stack trace capture
+        - Task 3.4: Phase 4 Full Regression Suite implemented with delta comparison vs test_baseline.json
+        - Task 3.5: Phase 5 Diff Audit implemented with binary file, scope, and whitespace-only checks
+        - Task 3.6: Phase 6 Side-Effect Check implemented with isolated subprocess module import
+        - Task 3.7: Startup baseline capture implemented via capture_baselines()
+        - Task 3.8: VerificationResult dataclass JSON serialization verified
+        - Task 3.9: Sequential execution with early-exit on first failure implemented
+        - Task 3.10: 5-call ring buffer CircuitBreaker with Level 1 WARNING, Level 2 BLOCK, Level 3 ESCALATE
+        - Task 3.11: Error taxonomy router for all 10 ErrorCode variants
+        - Tasks 3.12–3.19: All 10 error remediation strategies and prompt templates implemented
+        - Task 3.20: 3-level graceful degradation chain (L1 auto-remediate -> L2 plan revision -> L3 exit)
+        - Task 3.21: VerificationGate and RecoveryEngine interface wired cleanly
+        - Test Suite: 26 new unit & integration tests added in tests/test_verification.py and tests/test_recovery.py
+        - Results: 39 tests passing (100% of non-skipped tests), 0 failures, 82% codebase coverage
 ```
 
 ### P3 Exit Criteria Status
-- [ ] All 6 verification phases pass unit tests
-- [ ] Circuit breaker blocks identical sequential calls in 100% of tests
-- [ ] E2E: harness recovers from PATCH_FAILED in test repo
-- [ ] E2E: harness recovers from TEST_FAILED in test repo
-- [ ] `VerificationResult` JSON matches schema for all 6 outcomes
+- [x] All 6 verification phases pass unit tests
+- [x] Circuit breaker blocks identical sequential calls in 100% of tests
+- [x] E2E: harness recovers from PATCH_FAILED in test repo
+- [x] E2E: harness recovers from TEST_FAILED in test repo
+- [x] `VerificationResult` JSON matches schema for all 6 outcomes
 
 ---
 

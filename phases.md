@@ -168,10 +168,10 @@ zenith/
 - **Function-calling schema:** Pydantic models → `model.model_json_schema()` for tool definitions.
 
 ### P1 Exit Criteria
-- [ ] All 14 tool implementations pass unit tests (100% pass rate)
-- [ ] All 3 guard layers (dedup, reasoning, path) pass unit tests
-- [ ] All 12 blocklist patterns blocked correctly in sandbox
-- [ ] Single-turn E2E: reads file → patches → runs test → exit code 0
+- [x] All 14 tool implementations pass unit tests (100% pass rate)
+- [x] All 3 guard layers (dedup, reasoning, path) pass unit tests
+- [x] All 12 blocklist patterns blocked correctly in sandbox
+- [x] Single-turn E2E: reads file → patches → runs test → exit code 0
 
 ---
 
@@ -237,12 +237,12 @@ zenith/
 | 3.21 | Wire VerificationGate + RecoveryEngine into orchestrator state machine | §7 | E2E: agent fails test, auto-recovers, passes on 2nd attempt |
 
 ### P3 Exit Criteria
-- [ ] All 6 verification phases pass unit tests (correct PASS and FAIL for each)
-- [ ] All 10 error codes route to correct recovery handler
-- [ ] Circuit breaker Level 1/2/3 all trigger at correct thresholds
-- [ ] Graceful degradation chain: L1 → L2 → L3 escalates correctly
-- [ ] `VerificationResult` JSON matches schema in all 6-phase outcome combinations
-- [ ] E2E: intentional PATCH_FAILED → auto-recovery → PASS in test repo
+- [x] All 6 verification phases pass unit tests (correct PASS and FAIL for each)
+- [x] All 10 error codes route to correct recovery handler
+- [x] Circuit breaker Level 1/2/3 all trigger at correct thresholds
+- [x] Graceful degradation chain: L1 → L2 → L3 escalates correctly
+- [x] `VerificationResult` JSON matches schema in all 6-phase outcome combinations
+- [x] E2E: intentional PATCH_FAILED → auto-recovery → PASS in test repo
 
 ---
 

@@ -111,7 +111,7 @@ def main(args_list: list[str] | None = None) -> int:
             cli_args=cli_overrides,
         )
         config.validate()
-    except (ValueError, FileNotFoundError, KeyError, TypeError) as e:
+    except (OSError, ValueError, KeyError, TypeError) as e:
         print(f"Error loading configuration: {e}", file=sys.stderr)
         return 1
 
