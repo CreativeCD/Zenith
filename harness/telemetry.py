@@ -10,7 +10,6 @@ import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Optional
 
 from harness.contracts import (
     AgentPhase,
@@ -21,7 +20,7 @@ from harness.contracts import (
 )
 
 # Cost per 1M tokens (Prompt, Completion)
-MODEL_PRICING: Dict[str, Dict[str, float]] = {
+MODEL_PRICING: dict[str, dict[str, float]] = {
     "gemini-2.5-flash": {"input": 0.075, "output": 0.30},
     "gemini-2.5-pro": {"input": 1.25, "output": 5.00},
     "claude-3-5-sonnet": {"input": 3.00, "output": 15.00},
@@ -54,7 +53,7 @@ class TelemetryWriter:
     def __init__(
         self,
         output_dir: str = ".harness",
-        session_id: Optional[str] = None,
+        session_id: str | None = None,
         model_name: str = "gemini-2.5-flash",
         stream_to_stdout: bool = False,
     ):
@@ -157,7 +156,7 @@ class TelemetryWriter:
         tool_name: str,
         status: ResultStatus,
         latency_ms: int,
-        error_code: Optional[ErrorCode] = None,
+        error_code: ErrorCode | None = None,
     ) -> None:
         self.append(
             TelemetryEvent(

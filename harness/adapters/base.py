@@ -7,7 +7,7 @@ Abstracts all LLM interactions behind a provider-agnostic interface.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from harness.contracts import ToolCall
 
@@ -15,7 +15,7 @@ from harness.contracts import ToolCall
 @dataclass
 class ModelResponse:
     content: str
-    tool_calls: List[ToolCall] = field(default_factory=list)
+    tool_calls: list[ToolCall] = field(default_factory=list)
     tokens_in: int = 0
     tokens_out: int = 0
     latency_ms: int = 0
@@ -31,11 +31,11 @@ class ModelAdapter(Protocol):
         self,
         system_prompt: str,
         user_message: str,
-        tools: Optional[List[Dict[str, Any]]] = None,
+        tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.0,
         max_output_tokens: int = 4096,
         use_structured_output: bool = True,
-        seed: Optional[int] = 42,
+        seed: int | None = 42,
     ) -> ModelResponse:
         """Execute chat completion request with optional tool declarations."""
         ...

@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import List, Optional
 
 from harness.config import HarnessConfig, load_config
 from harness.telemetry import TelemetryWriter
@@ -97,7 +96,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(args_list: Optional[List[str]] = None) -> int:
+def main(args_list: list[str] | None = None) -> int:
     """Main CLI entrypoint."""
     parser = build_parser()
     args = parser.parse_args(args_list)
@@ -111,7 +110,7 @@ def main(args_list: Optional[List[str]] = None) -> int:
             cli_args=cli_overrides,
         )
         config.validate()
-    except Exception as e:
+    except (OSError, ValueError, KeyError) as e:
         print(f"Error loading configuration: {e}", file=sys.stderr)
         return 1
 

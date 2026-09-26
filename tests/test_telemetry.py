@@ -1,6 +1,7 @@
 """Unit tests for harness/telemetry.py."""
 
 import json
+
 from harness.contracts import AgentPhase, EventType, TelemetryEvent
 from harness.telemetry import TelemetryWriter, calculate_cost
 
