@@ -40,5 +40,7 @@ def calculate_discount(customer: dict[str, Any]) -> float:
 
     Returns float discount percentage.
     """
-    tier = customer["tier"]
+    tier = customer.get("tier")
+    if tier is None:
+        return 0.0
     return TIER_DISCOUNTS.get(str(tier).lower(), 0.0)

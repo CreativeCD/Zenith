@@ -43,3 +43,9 @@ def test_gold_tier_discount():
 def test_unknown_tier_returns_zero():
     customer = {"id": 3, "tier": "diamond"}
     assert calculate_discount(customer) == 0.0
+
+
+def test_missing_tier_returns_zero_discount():
+    customer = {"id": 123, "name": "John Doe"}
+    assert calculate_discount(customer) == 0.0
+
