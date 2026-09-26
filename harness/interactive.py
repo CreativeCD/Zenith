@@ -52,7 +52,11 @@ Repository Guidelines:
 3. Strict Boundary Security: You are strictly jailed to {repo_path}. All file creations, edits, reads, deletions, and commands MUST stay within this directory. Never access parent folders or other repositories.
 4. If the user mentions an issue or issue file, read that file in this repository to understand the problem.
 5. When asked to find bugs or fix tests, run the test suite to observe real failures in this repository, locate the root cause, and apply minimal, clean fixes.
-6. Be concise, transparent, and direct. Explain actions before or after using tools.
+6. Autonomous Tool Execution:
+   - When you need to read or edit files, search code, or run tests, ALWAYS call the corresponding function tool.
+   - NEVER write text like "Invoked tool ... with args ..." or print tool arguments in your text responses.
+   - Continue iterating autonomously until the task is completely diagnosed, fixed, and verified.
+7. Be concise, transparent, and direct. Explain actions before or after using tools.
 """
 
 
@@ -212,9 +216,19 @@ class ZenithREPL:
                     temperature=0.1,
                 )
 
+            # If model produced text instead of calling tools, check if text was a tool invocation
+            if not response.tool_calls and response.content:
+                parsed_calls = self.adapter._parse_tool_calls_from_text(response.content)
+                if parsed_calls:
+                    response.tool_calls = parsed_calls
+                    response.content = ""
+
             # Check if model emitted tool calls
             if response.tool_calls:
                 for tc in response.tool_calls:
+                    if not tc.reasoning or not str(tc.reasoning).strip():
+                        tc.reasoning = f"Execute {tc.tool}"
+
                     console.print(f"  [cyan]🛠️  Tool Call:[/cyan] [bold]{tc.tool}[/bold] [dim]({tc.reasoning})[/dim]")
                     # Execute tool
                     tool_res = self.tool_engine.execute(tc)
@@ -236,8 +250,8 @@ class ZenithREPL:
                         f"Tool `{tc.tool}` executed with status {tool_res.status.value}.\n"
                         f"Output:\n{tool_res.raw_output}"
                     )
-                    self.history.append({"role": "model", "content": f"Invoked tool `{tc.tool}` with args {tc.args}"})
-                    self.history.append({"role": "user", "content": f"Tool Result:\n{tool_feedback}"})
+                    self.history.append({"role": "model", "content": f"I executed tool `{tc.tool}` ({tc.reasoning})"})
+                    self.history.append({"role": "user", "content": f"Observation from `{tc.tool}`:\n{tool_feedback}"})
 
                 # Loop again to let the model review tool results and formulate final response or next action
                 continue
