@@ -1,10 +1,12 @@
 """harness/interactive.py — Interactive Claude Code Style REPL for Zenith.
 
 Provides:
-- Claude Code-grade autonomous engineering workflow
+- Claude Code-grade autonomous engineering workflow on ANY cloned GitHub repository
+- Automatic repository profiling (language, stack, manifest, architecture from README)
+- Dynamic execution & health checks ("run the project to itself" to detect failures)
+- Deep-dive codebase audit for bugs, logic loopholes, and missing error handling
 - Context window preparation, token budgeting, and working memory management
 - Multi-step task planning ([ ] 1. Explore, [ ] 2. Patch, [ ] 3. Verify)
-- Autonomous Diagnostic & Issue Engine ("find the issues, find bugs and errors", /debug)
 - Custom and internet skills integration (/skills, /skills install <url>, get_skill)
 - Live step-by-step tool execution with deduplication and loop prevention
 - Rich terminal UI with markdown rendering, syntax highlighting, and command history
@@ -75,11 +77,11 @@ CORE OPERATIONAL RULES:
    - When inspecting files, editing code, or running tests, ALWAYS call the appropriate function tool.
    - NEVER output pseudo-tool text such as "Invoked tool ... with args ..." or "Action: ...". Use native tool calls.
    - Call get_skill(skill_name='...') if you need detailed instructions for an installed skill.
-3. Multi-Step Engineering Discipline:
-   - Step 1: Inspect suspected files to identify the exact root cause.
-   - Step 2: Formulate a minimal, idiomatic fix satisfying all acceptance criteria without breaking existing tests.
-   - Step 3: Apply the patch cleanly via apply_patch.
-   - Step 4: Run the test suite via run_test_suite to verify 0 failures and regression safety.
+3. Deep-Dive Engineering Discipline:
+   - Understand the project's intended architecture, design, and behavior from its README, config, and source files.
+   - Investigate the root causes of any runtime crashes, logic loopholes, unhandled edge cases, or broken assumptions.
+   - Apply clean, idiomatic, minimal patches via apply_patch (or write_file).
+   - Run tests or verification checks via run_test_suite to ensure 0 failures and complete regression safety.
 4. Transparency:
    - Explain your rationale concisely before or after taking tool actions.
    - Synthesize your findings clearly when the task is verified.
@@ -143,25 +145,123 @@ class ZenithREPL:
             skills_block=skills_block,
         )
 
+    # ─── GENERAL REPOSITORY INTELLIGENCE & PROFILING ───────────────────────────
+
+    def profile_repository(self) -> dict[str, Any]:
+        """Dynamically inspect and profile any repository without hardcoding.
+
+        Extracts:
+        - Project stack (Python, Node/TS, Go, Rust, etc.)
+        - Manifest details (package.json, pyproject.toml, etc.)
+        - README documentation and intended functionality
+        - Source files and directories
+        - Test runner and build scripts
+        """
+        root = Path(self.repo_path)
+        profile: dict[str, Any] = {
+            "name": root.name,
+            "path": str(root),
+            "stack": "General",
+            "manifest": "",
+            "readme_summary": "",
+            "readme_file": "",
+            "test_runner": "None",
+            "source_dirs": [],
+            "test_dirs": [],
+            "source_files": [],
+            "total_source_files": 0,
+        }
+
+        # 1. Detect Stack and Manifest
+        if (root / "package.json").exists():
+            profile["stack"] = "Node.js / TypeScript" if any(root.glob("tsconfig*.json")) else "Node.js / JavaScript"
+            profile["manifest"] = "package.json"
+            profile["test_runner"] = "npm test"
+        elif any((root / f).exists() for f in ("pyproject.toml", "setup.py", "requirements.txt", "Pipfile")):
+            profile["stack"] = "Python"
+            profile["manifest"] = "pyproject.toml" if (root / "pyproject.toml").exists() else "setup.py"
+            profile["test_runner"] = "pytest"
+        elif (root / "go.mod").exists():
+            profile["stack"] = "Go"
+            profile["manifest"] = "go.mod"
+            profile["test_runner"] = "go test ./..."
+        elif (root / "Cargo.toml").exists():
+            profile["stack"] = "Rust"
+            profile["manifest"] = "Cargo.toml"
+            profile["test_runner"] = "cargo test"
+
+        # 2. Read README / Architecture documentation
+        readme_candidates = ["README.md", "README.rst", "README.txt", "README", "docs/index.md", "architecture.md"]
+        for rc in readme_candidates:
+            rp = root / rc
+            if rp.is_file() and rp.stat().st_size > 0:
+                try:
+                    lines = rp.read_text(encoding="utf-8", errors="ignore").splitlines()
+                    non_empty = [l.strip() for l in lines if l.strip()][:40]
+                    profile["readme_summary"] = "\n".join(non_empty)
+                    profile["readme_file"] = rc
+                    break
+                except Exception:
+                    pass
+
+        # 3. Discover source directories and key files
+        src_candidates = ["src", "lib", "app", "harness", "pkg", "cmd", "billing", "core"]
+        for sc in src_candidates:
+            sp = root / sc
+            if sp.is_dir():
+                profile["source_dirs"].append(sc)
+
+        test_candidates = ["tests", "test", "__tests__", "spec"]
+        for tc in test_candidates:
+            tp = root / tc
+            if tp.is_dir():
+                profile["test_dirs"].append(tc)
+
+        # Count total source code files
+        code_exts = {".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java", ".c", ".cpp", ".h", ".rb", ".php"}
+        all_files = []
+        for r, dirs, files in os.walk(root):
+            dirs[:] = [d for d in dirs if d not in (".git", "node_modules", ".harness", "__pycache__", ".venv", "venv", "dist", "build")]
+            for f in files:
+                p = Path(r) / f
+                if p.suffix in code_exts:
+                    all_files.append(str(p.relative_to(root)))
+        profile["source_files"] = all_files[:60]
+        profile["total_source_files"] = len(all_files)
+
+        return profile
+
     def print_welcome_banner(self) -> None:
-        """Render a sleek startup banner."""
-        repo_name = Path(self.repo_path).name
+        """Render a sleek startup banner showcasing repository intelligence."""
+        profile = self.profile_repository()
+        repo_name = profile["name"]
         key_count = self.adapter.key_pool.total_keys
         model_name = self.config.model.name
         skills_count = len(self.skill_manager.discover_skills())
 
-        # Check if an issue file is already present
-        issues = self.discover_issues()
-        issue_status = f"[bold green]{len(issues)} issue file(s) detected[/bold green]" if issues else "[dim]None detected (ready for queries)[/dim]"
+        stack_str = f"[bold green]{profile['stack']}[/bold green]"
+        if profile["test_runner"] != "None":
+            stack_str += f" [dim]({profile['test_runner']} detected)[/dim]"
+
+        file_count_str = f"[cyan]{profile['total_source_files']} source files[/cyan]"
+        if profile["source_dirs"]:
+            file_count_str += f" [dim]({', '.join(profile['source_dirs'])})[/dim]"
+
+        readme_preview = ""
+        if profile.get("readme_summary"):
+            first_line = profile["readme_summary"].splitlines()[0]
+            clean_first = first_line.lstrip("#").strip()
+            if clean_first:
+                readme_preview = f"\n[bold]Overview[/bold] : [dim]{clean_first[:80]}[/dim]"
 
         banner_text = (
             f"[bold cyan]⚡ ZENITH CODE[/bold cyan] [dim]— Autonomous AI Engineer (Claude Code style)[/dim]\n"
             f"[bold]Repo[/bold]     : [green]{repo_name}[/green] [dim]({self.repo_path})[/dim]\n"
+            f"[bold]Project[/bold]  : {stack_str} • {file_count_str}\n"
             f"[bold]Trust[/bold]    : [bold green]🔒 Verified & Jailed strictly to this folder[/bold green]\n"
             f"[bold]Model[/bold]    : [cyan]{model_name}[/cyan] [dim]({key_count} active keys)[/dim]\n"
-            f"[bold]Skills[/bold]   : [cyan]{skills_count} installed[/cyan] [dim](Type /skills to list or install)[/dim]\n"
-            f"[bold]Issues[/bold]   : {issue_status}\n"
-            f"[bold]Commands[/bold] : Type [bold cyan]/help[/bold cyan] for commands, [bold cyan]/debug[/bold cyan] to auto-detect & fix bugs, [bold red]exit[/bold red] to quit."
+            f"[bold]Skills[/bold]   : [cyan]{skills_count} installed[/cyan] [dim](Type /skills to list)[/dim]{readme_preview}\n"
+            f"[bold]Commands[/bold] : Type [bold cyan]/scan[/bold cyan] to deep-dive audit codebase, [bold cyan]/plan <goal>[/bold cyan] to plan, [bold cyan]/help[/bold cyan] for all commands."
         )
         console.print(Panel(banner_text, border_style="cyan", expand=False))
         console.print("")
@@ -172,13 +272,13 @@ class ZenithREPL:
         table.add_column("Command", style="cyan", no_wrap=True)
         table.add_column("Description", style="white")
 
-        table.add_row("/debug, /scan", "Autonomous Diagnostic Engine: detect issues, failing tests, and fix bugs")
-        table.add_row("/plan <task>", "Formulate a multi-step plan before execution (Claude Code style)")
+        table.add_row("/scan, /audit, /debug", "Deep-dive audit codebase: run project, find bugs, loopholes & fix them")
+        table.add_row("/plan <task>", "Formulate an explicit multi-step plan before execution")
         table.add_row("/skills", "List all installed custom & internet skills")
         table.add_row("/skills show <name>", "Display detailed instructions for an installed skill")
         table.add_row("/skills install <src>", "Install a skill from GitHub, URL, or local folder")
         table.add_row("/context", "Display token usage breakdown and working memory")
-        table.add_row("/test", "Run repo test suite (pytest) and show results")
+        table.add_row("/test", "Run repo test suite and show results")
         table.add_row("/diff", "Display git diff of uncommitted changes")
         table.add_row("/status", "Show git status of the working tree")
         table.add_row("/rollback", "Revert uncommitted changes cleanly to HEAD")
@@ -187,16 +287,15 @@ class ZenithREPL:
         table.add_row("exit, quit, bye", "Exit the interactive session")
 
         console.print(table)
-        console.print("\n[dim]💡 Tip: You can also chat naturally! E.g. 'find the issues and bugs in the project', 'explain discounts.py', or 'install skill https://...'.[/dim]\n")
+        console.print("\n[dim]💡 Tip: You can also chat naturally! E.g. 'find the issues and bugs in the project', 'where are the loopholes?', or 'install skill https://...'.[/dim]\n")
 
-    # ─── VIRTUAL FILESYSTEM & ISSUE DISCOVERY ─────────────────────────────────
+    # ─── OPTIONAL ISSUE SPECIFICATION DISCOVERY ─────────────────────────────────
 
     def discover_issues(self) -> list[tuple[str, Path]]:
-        """Scan repository for issue files (issue.txt, issues/*.md, tasks, etc.)."""
+        """Optional scan for issue files if user happens to have one."""
         root = Path(self.repo_path)
         found: list[tuple[str, Path]] = []
 
-        # 1. Root single files
         root_candidates = [
             "issue.txt", "issues.txt", "ISSUE.md", "problem.txt",
             "bug.txt", "bugs.txt", "task.txt", "TASK.md", "instructions.txt",
@@ -206,7 +305,6 @@ class ZenithREPL:
             if p.is_file() and p.stat().st_size > 0:
                 found.append((name, p))
 
-        # 2. Issue directories
         issue_dirs = ["issues", ".issues", "eval_issues", "tasks", ".tasks"]
         for dname in issue_dirs:
             dp = root / dname
@@ -299,20 +397,18 @@ class ZenithREPL:
         table.add_row("[bold]Total In-Use[/bold]", f"[bold]{total_tok}[/bold]", f"[bold]{(total_tok/max_tok)*100:.1f}%[/bold]")
 
         console.print(table)
-
-        # Working memory panel
         console.print(Panel(wm_str, title="Working Memory (Active State)", border_style="blue"))
 
     # ─── DIRECT REPO ACTIONS ─────────────────────────────────────────────────
 
     def run_tests_direct(self) -> ToolResult:
-        """Run pytest directly on the target repo."""
-        with console.status("[bold cyan]🧪 Running test suite...[/bold cyan]", spinner="dots"):
+        """Run project tests directly."""
+        with console.status("[bold cyan]🧪 Running test runner...[/bold cyan]", spinner="dots"):
             res = run_test_suite(repo_root=self.repo_path)
         if res.exit_code == 0:
             console.print("[bold green]✅ All tests passed cleanly![/bold green]")
         else:
-            console.print(f"[bold red]❌ Test suite failed (Exit code: {res.exit_code})[/bold red]")
+            console.print(f"[bold red]❌ Tests failed (Exit code: {res.exit_code})[/bold red]")
         console.print(Panel(res.truncated_output, title="Test Output", border_style="dim"))
         return res
 
@@ -373,142 +469,146 @@ class ZenithREPL:
             {
                 "step": 1,
                 "status": "pending",
-                "desc": f"Inspect suspected codebase location{suspected_hint} and understand context",
+                "desc": f"Deep-dive inspect codebase{suspected_hint} to understand intended logic and flow",
             },
             {
                 "step": 2,
                 "status": "pending",
-                "desc": "Identify root cause and formulate minimal, robust fix adhering to acceptance criteria",
+                "desc": "Identify flaws, broken edge cases, unhandled errors, and loopholes",
             },
             {
                 "step": 3,
                 "status": "pending",
-                "desc": "Apply clean patch using apply_patch / write_file",
+                "desc": "Apply clean, minimal patches to fix issues and close loopholes",
             },
             {
                 "step": 4,
                 "status": "pending",
-                "desc": "Run test suite to verify 0 failures and ensure no regressions",
+                "desc": "Run test suite / project verification to ensure all checks pass with 0 regressions",
             },
         ]
         self.active_plan = plan
         return plan
 
     async def autonomous_investigation(self, query: str = "") -> None:
-        """Autonomous Diagnostic Engine: scans issues, tests, syntax, and fixes bugs."""
-        console.print("\n[bold cyan]🔍 Autonomous Diagnostic & Issue Engine Activated[/bold cyan]")
-        console.print("[dim]Scanning repository for issues, test failures, and bug specifications...[/dim]\n")
+        """Deep-dive codebase audit and autonomous bug/loophole repair engine.
 
-        # ── Step 1: Discover and Load Issue Specifications
-        discovered = self.discover_issues()
-        active_issue_file: Path | None = None
-        issue_plan: IssuePlan | None = None
+        Operates on ANY arbitrary cloned repository without requiring any issue.txt file:
+        1. Reads project README, architecture, manifests (package.json, pyproject.toml, etc.) to understand intended design.
+        2. Runs test suite or execution checks to observe runtime health, crashes, or failures.
+        3. Scans source tree for syntax errors, broken imports, missing dependencies, or unhandled exceptions.
+        4. Dispatches autonomous AI agent to inspect core logic flows, identify loopholes, edge-case vulnerabilities, and bugs.
+        5. Formulates a concrete action plan and autonomously repairs and verifies the codebase.
+        """
+        console.print("\n[bold cyan]🔬 Deep Codebase Audit & Autonomous Investigation Activated[/bold cyan]")
+        console.print("[dim]Profiling repository architecture, intended behavior, and runtime health...[/dim]\n")
 
-        if discovered:
-            # Select first active issue file
-            active_label, active_issue_file = discovered[0]
-            console.print(f"[bold green]🎯 Found issue specification:[/bold green] [cyan]{active_label}[/cyan]")
-            issue_plan = self.load_issue(active_issue_file)
+        # ── Step 1: Profile the Repository & Read Blueprint ──
+        profile = self.profile_repository()
+        stack_desc = profile["stack"]
+        total_files = profile["total_source_files"]
+        source_dirs = ", ".join(profile["source_dirs"]) if profile["source_dirs"] else "root"
 
-            criteria_bullets = "\n".join(f"  • {c}" for c in issue_plan.acceptance_criteria) or "  • Fix bug cleanly"
-            suspected_names = [sf.path for sf in issue_plan.suspected_files]
-            suspected_str = ", ".join(suspected_names) if suspected_names else "To be discovered"
+        profile_table = Table(title="Repository Blueprint", border_style="cyan")
+        profile_table.add_column("Property", style="bold cyan")
+        profile_table.add_column("Details", style="white")
+        profile_table.add_row("Repository", f"{profile['name']} ({self.repo_path})")
+        profile_table.add_row("Stack / Ecosystem", stack_desc)
+        profile_table.add_row("Source Structure", f"{total_files} source files in {source_dirs}")
+        if profile.get("manifest"):
+            profile_table.add_row("Manifest File", profile["manifest"])
+        if profile.get("readme_file"):
+            profile_table.add_row("Documentation", profile["readme_file"])
 
-            panel_content = (
-                f"[bold]Title[/bold]              : {issue_plan.primary_goal}\n"
-                f"[bold]File[/bold]               : {active_label}\n"
-                f"[bold]Suspected Path[/bold]     : [yellow]{suspected_str}[/yellow]\n"
-                f"[bold]Complexity[/bold]         : {issue_plan.complexity_estimate.value}\n"
-                f"[bold]Acceptance Criteria[/bold]:\n{criteria_bullets}"
-            )
-            console.print(Panel(panel_content, title="Active Target Issue", border_style="cyan"))
-        else:
-            console.print("[dim]No explicit issue files (issue.txt / issues/*.md) found. Checking test suite...[/dim]")
+        console.print(profile_table)
 
-        # ── Step 2: Diagnostic Baseline Test Suite Run
-        console.print("[dim]Running test runner to establish baseline failure state...[/dim]")
+        # ── Step 2: Dynamic Execution Check ("Run it to itself") ──
+        console.print("\n[dim]Running dynamic health checks & test runner...[/dim]")
         test_res = run_test_suite(repo_root=self.repo_path)
-        has_test_failure = (test_res.exit_code != 0)
+        has_test_failures = (test_res.exit_code != 0)
 
-        if has_test_failure:
-            console.print(f"[bold red]❌ Baseline test failure confirmed (Exit code: {test_res.exit_code})[/bold red]")
-            console.print(Panel(test_res.truncated_output[:1000], title="Failure Traceback", border_style="red"))
+        if has_test_failures:
+            console.print(f"[bold red]❌ Dynamic Execution Failure Detected (Exit code: {test_res.exit_code})[/bold red]")
+            console.print(Panel(test_res.truncated_output[:1200], title="Failure Traceback / Test Errors", border_style="red"))
             self.context_manager.update_working_memory(
-                test_status=f"FAILING (exit code {test_res.exit_code})",
+                test_status=f"FAILING (exit code {test_res.exit_code}): {test_res.truncated_output[:200]}",
             )
         else:
-            console.print("[green]ℹ️ Existing test suite currently passes.[/green]")
-            if issue_plan:
-                console.print("[dim]The issue specifies an untested bug or regression that requires reproduction.[/dim]")
-            self.context_manager.update_working_memory(
-                test_status="PASSING (Baseline). Bug reproduction or regression test required.",
-            )
+            if "collected 0 items" in test_res.raw_output or test_res.raw_output.strip().startswith("No tests"):
+                console.print("[yellow]ℹ️  No automated test suite discovered. Proceeding to source code audit.[/yellow]")
+                self.context_manager.update_working_memory(
+                    test_status="NO_TESTS_FOUND: Code audit required",
+                )
+            else:
+                console.print(f"[bold green]✅ Test Suite Cleanly Executed[/bold green] [dim]({test_res.truncated_output[:100]}...)[/dim]")
+                console.print("[dim]Proceeding to deep-dive source audit for logic loopholes, unhandled edge cases, and missing features.[/dim]")
+                self.context_manager.update_working_memory(
+                    test_status="PASSING: Inspecting for logic loopholes & unhandled edge cases",
+                )
 
-        # ── Step 3: Syntax Sanity Scan
+        # ── Step 3: Static & Syntax Sanity Audit ──
         syntax_errors: list[str] = []
-        for root, _, files in os.walk(self.repo_path):
-            if any(j in root for j in (".git", ".harness", "__pycache__", ".venv", "venv")):
-                continue
+        for root, dirs, files in os.walk(self.repo_path):
+            dirs[:] = [d for d in dirs if d not in (".git", "node_modules", ".harness", "__pycache__", ".venv", "venv", "dist", "build")]
             for f in files:
                 if f.endswith(".py"):
                     full_p = Path(root) / f
                     try:
-                        compile(full_p.read_text(encoding="utf-8"), str(full_p), "exec")
+                        compile(full_p.read_text(encoding="utf-8", errors="ignore"), str(full_p), "exec")
                     except SyntaxError as e:
                         rel = os.path.relpath(str(full_p), self.repo_path)
                         syntax_errors.append(f"{rel}:{e.lineno}: {e.msg}")
 
         if syntax_errors:
-            console.print(f"[bold red]⚠️  Detected {len(syntax_errors)} Python syntax error(s):[/bold red]")
+            console.print(f"[bold red]⚠️  Detected {len(syntax_errors)} Syntax / Compilation Error(s):[/bold red]")
             for se in syntax_errors[:5]:
                 console.print(f"   [red]• {se}[/red]")
 
-        # If nothing is broken and no issue file exists
-        if not issue_plan and not has_test_failure and not syntax_errors:
-            diff_res = git_diff(repo_root=self.repo_path)
-            if diff_res.status == ResultStatus.SUCCESS and diff_res.raw_output and not diff_res.raw_output.startswith("Working tree clean"):
-                console.print("\n[yellow]No explicit issues found, but uncommitted changes exist:[/yellow]")
-                self.show_diff()
-            else:
-                console.print("\n[bold green]✅ Clean repository audit![/bold green] All tests pass, no syntax errors, and no issue files found.")
-                console.print("[dim]If there is a specific feature or bug you want me to work on, describe it or use /plan <goal>.[/dim]\n")
-            return
+        # ── Step 4: Optional Issue Specification Context (if user supplied one) ──
+        optional_issue_text = ""
+        discovered_issues = self.discover_issues()
+        if discovered_issues:
+            label, ipath = discovered_issues[0]
+            try:
+                optional_issue_text = f"\n\nOPTIONAL ISSUE SPECIFICATION ({label}):\n```\n{ipath.read_text(encoding='utf-8')[:2000]}\n```"
+            except Exception:
+                pass
 
-        # ── Step 4: Formulate Action Plan
-        goal = issue_plan.primary_goal if issue_plan else "Investigate and resolve repository test/syntax failures"
-        suspected_files = [sf.path for sf in issue_plan.suspected_files] if issue_plan else []
-        plan = self.formulate_plan(goal, suspected_files, has_test_failure)
+        # ── Step 5: Formulate Action Plan ──
+        goal = query.strip() or f"Deep audit of {profile['name']} to identify bugs, loopholes, and missing features"
+        plan = self.formulate_plan(
+            goal=goal,
+            suspected_files=profile["source_files"][:5],
+            has_test_failure=has_test_failures,
+        )
         self.render_plan(plan)
 
-        # Update working memory strategy
-        self.context_manager.update_working_memory(
-            strategy=f"Execute 4-step plan for '{goal}'",
-        )
-
-        # ── Step 5: Build Autonomous Agent Prompt & Execute
-        issue_context_str = ""
-        if active_issue_file and active_issue_file.exists():
-            issue_context_str = f"\n\nISSUE SPECIFICATION ({active_issue_file.name}):\n```\n{active_issue_file.read_text(encoding='utf-8')}\n```"
-
-        test_failure_context = ""
-        if has_test_failure:
-            test_failure_context = f"\n\nCURRENT TEST FAILURE:\n```\n{test_res.truncated_output[:1500]}\n```"
-
-        syntax_context = ""
-        if syntax_errors:
-            syntax_context = f"\n\nSYNTAX ERRORS DETECTED:\n" + "\n".join(syntax_errors)
+        # ── Step 6: Dispatch Autonomous Agent Deep-Dive ──
+        readme_snippet = profile.get("readme_summary", "No README available.")[:1500]
+        test_snippet = test_res.truncated_output[:1200]
+        source_files_preview = ", ".join(profile["source_files"][:25])
 
         investigation_prompt = (
-            f"GOAL: {goal}\n"
-            f"{issue_context_str}"
-            f"{test_failure_context}"
-            f"{syntax_context}\n\n"
-            f"ACTION PLAN:\n"
-            f"1. Read and inspect the relevant source file(s) around the failure location.\n"
-            f"2. Diagnose the root cause against the acceptance criteria.\n"
-            f"3. Apply a clean, minimal patch using apply_patch (or write_file).\n"
-            f"4. Run run_test_suite to verify that tests pass cleanly.\n\n"
-            f"Please execute Step 1 now by reading the suspected file or running tests."
+            f"AUDIT GOAL: {goal}\n\n"
+            f"REPOSITORY BLUEPRINT:\n"
+            f"- Project Name: {profile['name']}\n"
+            f"- Stack: {profile['stack']}\n"
+            f"- Manifest: {profile.get('manifest', 'None')}\n"
+            f"- Source Files: {source_files_preview}\n\n"
+            f"PROJECT DOCUMENTATION & INTENDED BEHAVIOR:\n"
+            f"```\n{readme_snippet}\n```\n\n"
+            f"DYNAMIC RUNTIME & TEST OUTPUT:\n"
+            f"```\n{test_snippet}\n```\n\n"
+            f"SYNTAX & COMPILATION CHECK:\n"
+            f"{'Syntax errors: ' + ', '.join(syntax_errors) if syntax_errors else 'No syntax errors detected.'}\n"
+            f"{optional_issue_text}\n\n"
+            f"AUDIT INSTRUCTIONS:\n"
+            f"1. Use search_code, list_dir, and read_file_range to inspect the main entry points, core logic, and key files.\n"
+            f"2. Check if the project is actually working according to its intended plan and requirements.\n"
+            f"3. Find where it has bugs, runtime crashes, missing error handling, unhandled edge cases, or logic loopholes.\n"
+            f"4. If bugs or loopholes are found, apply minimal, clean patches using apply_patch / write_file.\n"
+            f"5. Run run_test_suite (or execute the project) to verify that everything works cleanly with zero regressions.\n\n"
+            f"Start your deep-dive inspection now."
         )
 
         await self.execute_autonomous_loop(investigation_prompt)
@@ -523,7 +623,7 @@ class ZenithREPL:
         """Multi-turn autonomous execution loop with deduplication, loop prevention, and memory."""
         self.history.append({"role": "user", "content": initial_prompt})
 
-        max_turns = 14
+        max_turns = 16
         current_turn = 0
         executed_tool_signatures: list[str] = []
 
@@ -537,7 +637,7 @@ class ZenithREPL:
             wm_text = format_working_memory(self.context_manager.working_memory)
             full_system_prompt = f"{system_prompt}\n\n{wm_text}"
 
-            with console.status(f"[bold cyan]🧠 Step {current_turn}/{max_turns}: Thinking & planning...[/bold cyan]", spinner="dots"):
+            with console.status(f"[bold cyan]🧠 Step {current_turn}/{max_turns}: Thinking & inspecting...[/bold cyan]", spinner="dots"):
                 response = await self.adapter.complete(
                     system_prompt=full_system_prompt,
                     user_message="",
@@ -646,7 +746,7 @@ class ZenithREPL:
         diff_res = git_diff(repo_root=self.repo_path)
         if diff_res.status == ResultStatus.SUCCESS and diff_res.raw_output and not diff_res.raw_output.startswith("Working tree clean"):
             console.print("\n[bold green]══════════════════════════════════════════════════════════════════════[/bold green]")
-            console.print("[bold green]🎉 TASK COMPLETED & CODE PATCH APPLIED![/bold green]")
+            console.print("[bold green]🎉 CODEBASE REPAIRED & VERIFIED![/bold green]")
             console.print("[bold green]══════════════════════════════════════════════════════════════════════[/bold green]")
             syntax = Syntax(diff_res.raw_output, "diff", theme="monokai", line_numbers=True)
             console.print(Panel(syntax, title="Verified Git Diff", border_style="green"))
@@ -677,16 +777,18 @@ class ZenithREPL:
             self.session_active = False
             return
 
-        # 3. Autonomous Diagnostic Engine Triggers ("find the issues, find bugs and errors", /debug, etc.)
-        issue_triggers = [
+        # 3. Deep Codebase Audit & Autonomous Investigation Triggers
+        investigation_triggers = [
             "find issue", "find the issue", "find issues", "find the issues",
             "find bug", "find the bug", "find bugs", "find the bugs",
             "find error", "find the error", "find errors", "find the errors",
-            "scan project", "scan repo", "audit project", "diagnose",
+            "scan project", "scan repo", "audit project", "audit repo", "audit codebase",
+            "deep dive", "diagnose", "where are the loopholes", "find loopholes",
             "fix issue", "fix the issue", "fix bugs", "fix the bug",
             "fix error", "fix failing", "what are the issues", "what are the bugs",
+            "what is missing", "check if the project is working", "is the project working",
         ]
-        if any(trig in cleaned for trig in issue_triggers):
+        if any(trig in cleaned for trig in investigation_triggers):
             await self.autonomous_investigation(query=user_msg)
             return
 
@@ -782,7 +884,7 @@ class ZenithREPL:
                     self.print_welcome_banner()
                     continue
 
-                if cmd_lower in ("/debug", "/scan", "/audit", "/issues"):
+                if cmd_lower in ("/scan", "/audit", "/debug", "/issues"):
                     await self.autonomous_investigation()
                     continue
 

@@ -43,6 +43,29 @@ def test_repl_casual_exit(dummy_config):
     assert repl.session_active is False
 
 
+def test_profile_repository(dummy_config, tmp_path):
+    repl = ZenithREPL(config=dummy_config)
+    # 1. Initially empty directory
+    profile = repl.profile_repository()
+    assert profile["stack"] == "General"
+
+    # 2. Add README and package manifest
+    readme = tmp_path / "README.md"
+    readme.write_text("# My Awesome Tool\nAn intelligent CLI tool for data processing.", encoding="utf-8")
+    pkg = tmp_path / "pyproject.toml"
+    pkg.write_text("[project]\nname = 'awesome-tool'", encoding="utf-8")
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "main.py").write_text("print('hello')", encoding="utf-8")
+
+    profile2 = repl.profile_repository()
+    assert profile2["stack"] == "Python"
+    assert profile2["manifest"] == "pyproject.toml"
+    assert "My Awesome Tool" in profile2["readme_summary"]
+    assert profile2["total_source_files"] >= 1
+    assert "src" in profile2["source_dirs"]
+
+
 def test_discover_issues(dummy_config, tmp_path):
     repl = ZenithREPL(config=dummy_config)
 
