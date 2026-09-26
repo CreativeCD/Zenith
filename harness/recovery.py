@@ -360,63 +360,17 @@ class RecoveryEngine:
     ) -> bool:
         """Execute git rollback with specified scope ('file', 'all', 'checkpoint')."""
         try:
-            repo_root = Path(repo_path).resolve()
+            from harness.tools.vcs import git_rollback
             if scope == "file" and target:
-                target_path = (repo_root / target).resolve()
-                # Security: prevent path traversal outside repository root
-                if not str(target_path).startswith(str(repo_root)):
+                res = git_rollback(repo_root=repo_path, file_path=target)
+                if res.status != ResultStatus.SUCCESS:
                     return False
-
-                # Check if target is tracked in git
-                ls_proc = subprocess.run(
-                    ["git", "ls-files", "--error-unmatch", "--", target],
-                    cwd=repo_path,
-                    capture_output=True,
-                    check=False,
-                )
-                if ls_proc.returncode == 0:
-                    subprocess.run(
-                        ["git", "checkout", "HEAD", "--", target],
-                        check=True,
-                        cwd=repo_path,
-                        capture_output=True,
-                    )
-                else:
-                    # Untracked file: remove it cleanly
-                    if target_path.is_file():
-                        target_path.unlink()
-                    elif target_path.is_dir():
-                        shutil.rmtree(target_path)
-
-            elif scope == "all":
-                subprocess.run(
-                    ["git", "checkout", "HEAD", "--", "."],
-                    check=True,
-                    cwd=repo_path,
-                    capture_output=True,
-                )
-                subprocess.run(
-                    ["git", "clean", "-fd", "-e", ".harness", "-e", ".venv"],
-                    check=True,
-                    cwd=repo_path,
-                    capture_output=True,
-                )
-            elif scope == "checkpoint":
-                # Rollback uncommitted changes to clean working tree
-                subprocess.run(
-                    ["git", "checkout", "HEAD", "--", "."],
-                    check=True,
-                    cwd=repo_path,
-                    capture_output=True,
-                )
-                subprocess.run(
-                    ["git", "clean", "-fd", "-e", ".harness", "-e", ".venv"],
-                    check=True,
-                    cwd=repo_path,
-                    capture_output=True,
-                )
+            elif scope in ("all", "checkpoint"):
+                res = git_rollback(repo_root=repo_path)
+                if res.status != ResultStatus.SUCCESS:
+                    return False
                 # If target checkpoint id is specified, try restoring that diff
-                if target:
+                if scope == "checkpoint" and target:
                     try:
                         cid = int(target)
                         diff_text = self.checkpoints.get(cid)
@@ -638,13 +592,18 @@ class RecoveryEngine:
     def _remediate_loop_detected(self, ctx: dict[str, Any], step: int) -> RecoveryAction:
         tool = ctx.get("tool", "tool")
         args = ctx.get("args", "args")
+        is_edit = str(tool) in ("apply_patch", "write_file", "edit_file")
+        if is_edit:
+            action_1 = "1. Run git_rollback to restore clean state before retrying."
+        else:
+            action_1 = "1. You already have the output from this tool. DO NOT repeat this call with identical arguments."
         prompt = (
             f"LOOP DETECTED at step {step}: `{tool}({args})` called twice identically.\n"
             "REQUIRED ACTIONS:\n"
-            "1. Run git_rollback to restore clean state.\n"
-            "2. Re-read the TARGET SECTION (±20 lines around your target).\n"
-            "3. State in one sentence: what was DIFFERENT about what you found.\n"
-            "4. Propose a DIFFERENT approach before any edit."
+            f"{action_1}\n"
+            "2. If you found candidate files, read them using read_file_range.\n"
+            "3. State in one sentence what your next action is.\n"
+            "4. Propose a DIFFERENT tool or different arguments."
         )
         return RecoveryAction(
             error_code=ErrorCode.LOOP_DETECTED,

@@ -14,16 +14,18 @@ import os
 import re
 import time
 from pathlib import Path
+from typing import Any
 
-from harness.adapters.base import ModelAdapter
+from harness.adapters.base import ModelAdapter, ModelResponse
 from harness.adapters.gemini_adapter import GeminiAdapter
 from harness.config import HarnessConfig
-from harness.context_manager import ContextManager
+from harness.context_manager import ContextManager, TurnRecord
 from harness.contracts import (
     AgentPhase,
     AgentPlan,
     Complexity,
     DoneCandidate,
+    ErrorCode,
     EventType,
     PlanStep,
     ResultStatus,
@@ -156,7 +158,10 @@ class Orchestrator:
         self.config = config or HarnessConfig()
         self.model_adapter = model_adapter or GeminiAdapter(
             api_key=self.config.model.api_key,
+            api_keys=self.config.model.api_keys,
             model_name=self.config.model.name,
+            fallback_chain=self.config.model.fallback_chain,
+            max_continuations=getattr(self.config.model, "max_continuations", 3),
         )
 
         out_dir = self.config.telemetry.output_dir
@@ -260,6 +265,34 @@ class Orchestrator:
                 return asyncio.run(self.run_async(issue_text))
         except Exception:
             return asyncio.run(self.run_async(issue_text))
+
+    async def _call_model(
+        self,
+        system_prompt: str,
+        user_message: str,
+        temperature: float = 0.0,
+        tools: list[dict[str, Any]] | None = None,
+        reasoning_effort: str = "low",
+    ) -> ModelResponse:
+        """Call model adapter with parameter filtering for mock/legacy adapters."""
+        import inspect
+        kwargs: dict[str, Any] = {
+            "system_prompt": system_prompt,
+            "user_message": user_message,
+            "temperature": temperature,
+        }
+        if tools is not None:
+            kwargs["tools"] = tools
+
+        sig = inspect.signature(self.model_adapter.complete)
+        accepts_var = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+        if "reasoning_effort" in sig.parameters or accepts_var:
+            kwargs["reasoning_effort"] = reasoning_effort
+
+        if not accepts_var:
+            kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
+
+        return await self.model_adapter.complete(**kwargs)
 
     async def run_async(self, issue_text: str) -> SessionResult:
         """Asynchronously execute full autonomous ReAct state machine."""
@@ -376,6 +409,10 @@ class Orchestrator:
 
         # ─── 3. PLAN Phase ─────────────────────────────────────────────────
         self.current_phase = AgentPhase.PLAN
+
+        # Build tool definitions ONCE — passed to every model call so Gemini can emit function_calls
+        tool_definitions = self.tool_engine.get_tool_definitions()
+
         plan_prompt = (
             "Emit the initial structured execution plan in JSON format (PRD §4.5.2):\n"
             "{\n"
@@ -388,10 +425,11 @@ class Orchestrator:
             "}\n"
         )
         prompt_sections = self.context_manager.build_prompt(ranked_files=self.ranked_files)
-        plan_response = await self.model_adapter.complete(
+        plan_response = await self._call_model(
             system_prompt=prompt_sections.persona,
             user_message=prompt_sections.issue_goal + "\n\n" + plan_prompt,
             temperature=self.config.model.temperature_plan,
+            reasoning_effort=self.config.model.reasoning_effort_plan,
         )
         total_tokens += plan_response.tokens_in + plan_response.tokens_out
         total_cost_usd += getattr(plan_response, "cost_usd", 0.0)
@@ -444,21 +482,69 @@ class Orchestrator:
             else:
                 user_msg = f"Begin execution for goal: {issue_plan.primary_goal}. Next step: {current_step_desc}"
 
+            effort = self.config.model.reasoning_effort_act
+            if hasattr(self, "recovery_engine") and getattr(self.recovery_engine, "in_recovery", False):
+                effort = self.config.model.reasoning_effort_recovery
+            elif last_observation:
+                effort = self.config.model.reasoning_effort_reflect
+
             prompt_sections = self.context_manager.build_prompt(ranked_files=self.ranked_files)
-            turn_response = await self.model_adapter.complete(
-                system_prompt=prompt_sections.persona,
-                user_message=user_msg,
-                temperature=self.config.model.temperature_act,
+
+            # Assemble dynamic sections body (goal, repo files, working memory, recent turns)
+            sections_body = (
+                f"{prompt_sections.issue_goal}\n\n"
+                f"{prompt_sections.repo_context}\n\n"
+                f"{prompt_sections.working_memory}\n\n"
+                f"{prompt_sections.recent_turns}"
             )
+            full_user_msg = f"{sections_body}\n\n---\n# § ACTIVE STEP & INSTRUCTION\n{user_msg}"
+
+            turn_start = time.perf_counter()
+            turn_response = await self._call_model(
+                system_prompt=prompt_sections.persona,
+                user_message=full_user_msg,
+                temperature=self.config.model.temperature_act,
+                tools=tool_definitions,
+                reasoning_effort=effort,
+            )
+            turn_latency_ms = int((time.perf_counter() - turn_start) * 1000)
             total_tokens += turn_response.tokens_in + turn_response.tokens_out
             total_cost_usd += getattr(turn_response, "cost_usd", 0.0)
 
+            # Log LLM turn to telemetry
+            self.telemetry.log_llm_turn(
+                step=self.current_step,
+                phase=self.current_phase,
+                tokens_in=turn_response.tokens_in,
+                tokens_out=turn_response.tokens_out,
+                latency_ms=turn_latency_ms,
+                context_tokens_used=prompt_sections.total_tokens,
+                budget=self.config.context.max_context_tokens,
+                agent="orchestrator",
+            )
+
             content = turn_response.content.strip()
 
-            # Check for DONE_CANDIDATE signal
-            if '"status": "DONE_CANDIDATE"' in content or '"status":"DONE_CANDIDATE"' in content:
+            # Check for DONE_CANDIDATE signal in text OR emit_done_candidate tool call
+            is_done_candidate_call = bool(
+                turn_response.tool_calls and turn_response.tool_calls[0].tool == "emit_done_candidate"
+            )
+            is_done_candidate_text = (
+                '"status": "DONE_CANDIDATE"' in content or '"status":"DONE_CANDIDATE"' in content
+            )
+
+            if is_done_candidate_call or is_done_candidate_text:
                 try:
-                    done_candidate = parse_done_candidate(content)
+                    if is_done_candidate_call:
+                        t_args = turn_response.tool_calls[0].args or {}
+                        done_candidate = DoneCandidate(
+                            confidence=float(t_args.get("confidence", 1.0)),
+                            evidence=list(t_args.get("evidence", [])),
+                            files_modified=list(t_args.get("files_modified", [])),
+                        )
+                    else:
+                        done_candidate = parse_done_candidate(content)
+
                     self.current_phase = AgentPhase.DONE_CANDIDATE
                     self.telemetry.log_event(
                         event_type=EventType.DONE_CANDIDATE,
@@ -473,6 +559,17 @@ class Orchestrator:
                         issue_plan=issue_plan,
                         step=self.current_step,
                     )
+
+                    # Log verification phases to telemetry
+                    if hasattr(verification_result, "phases") and isinstance(verification_result.phases, dict):
+                        for phase_name, p in verification_result.phases.items():
+                            self.telemetry.log_verification_phase(
+                                step=self.current_step,
+                                phase=phase_name,
+                                status=getattr(p, "status", ResultStatus.SUCCESS),
+                                detail=getattr(p, "detail", ""),
+                                duration_ms=getattr(p, "duration_ms", 0),
+                            )
 
                     if verification_result.status == ResultStatus.SUCCESS:
                         self.current_step += 1
@@ -522,6 +619,10 @@ class Orchestrator:
             elif turn_response.tool_calls:
                 # Execute tool call
                 t_call = turn_response.tool_calls[0]
+                if not t_call.fingerprint:
+                    from harness.recovery import CircuitBreaker
+                    t_call.fingerprint = CircuitBreaker.compute_fingerprint(t_call.tool, t_call.args)
+
                 self.telemetry.log_tool_call(
                     step=self.current_step,
                     tool_name=t_call.tool,
@@ -540,12 +641,62 @@ class Orchestrator:
                     error_code=tool_res.error_code,
                 )
 
-                last_observation = tool_res.truncated_output
+                # Record turn in context manager for sliding window
+                turn_record = TurnRecord(
+                    step=self.current_step,
+                    tool=t_call.tool,
+                    reasoning=t_call.reasoning,
+                    args=t_call.args,
+                    observation=tool_res.truncated_output,
+                    status=tool_res.status,
+                    error_code=tool_res.error_code,
+                    exit_code=tool_res.exit_code,
+                )
+                self.context_manager.add_turn(turn_record)
+
+                # Update working memory based on executed tool
+                if tool_res.status == ResultStatus.SUCCESS:
+                    if t_call.tool in ("read_file_range", "get_symbol"):
+                        target = t_call.args.get("file_path") or t_call.args.get("path")
+                        if target:
+                            self.context_manager.update_working_memory(
+                                file_examined=(str(target), f"inspected in step {self.current_step}")
+                            )
+                    elif t_call.tool in ("apply_patch", "write_file", "edit_file"):
+                        target = t_call.args.get("target_file") or t_call.args.get("path")
+                        if target:
+                            self.context_manager.update_working_memory(
+                                edit_applied=f"{target}: modified in step {self.current_step}"
+                            )
+                        if hasattr(self, "recovery_engine") and hasattr(self.recovery_engine, "circuit_breaker"):
+                            self.recovery_engine.circuit_breaker.reset_buffer()
+                    elif t_call.tool == "run_test_suite":
+                        status_str = "PASS: test suite passing" if tool_res.exit_code == 0 else "FAIL: test suite failing"
+                        self.context_manager.update_working_memory(test_status=status_str)
+
+                if tool_res.error_code == ErrorCode.LOOP_DETECTED:
+                    rec_action = self.recovery_engine.classify_error(
+                        error_code=ErrorCode.LOOP_DETECTED,
+                        context={"tool": t_call.tool, "args": t_call.args, "detail": tool_res.truncated_output},
+                        step=self.current_step,
+                    )
+                    last_observation = (
+                        f"{tool_res.truncated_output}\n\n"
+                        f"[RECOVERY STRATEGY SHIFT]\n{rec_action.injection_prompt}"
+                    )
+                else:
+                    last_observation = tool_res.truncated_output
                 self.current_phase = AgentPhase.REFLECT
 
             else:
                 # Fallback: check if content contains tool call or done candidate in text
                 last_observation = content[:500]
+                turn_record = TurnRecord(
+                    step=self.current_step,
+                    reasoning=content[:500] if content else "Model emitted direct text response",
+                    observation="No tool call emitted",
+                )
+                self.context_manager.add_turn(turn_record)
                 self.current_phase = AgentPhase.REFLECT
 
             self.current_step += 1
@@ -555,9 +706,8 @@ class Orchestrator:
 
         # Always generate report.md unconditionally upon run completion (Task 5.21)
         try:
-            diff_res = self.tool_engine.execute(
-                ToolCall(tool="git_diff", reasoning="Report diff", args={})
-            )
+            from harness.tools.vcs import git_diff
+            diff_res = git_diff(repo_root=self.config.repo_path)
             final_diff_str = diff_res.raw_output if diff_res else ""
         except Exception:
             final_diff_str = ""

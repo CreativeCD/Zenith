@@ -34,20 +34,46 @@ fi
 # ── Parse args ───────────────────────────────────────────────────────────────
 REPO_PATH="."
 ISSUE_PATH="issue.txt"
-EXTRA_FLAGS=()
+EXTRA_FLAGS=("--verbose")
 POSITIONAL=0
 
-for arg in "$@"; do
-  case "$arg" in
-    --dry)     EXTRA_FLAGS+=("--dry-run") ;;
-    --verbose) EXTRA_FLAGS+=("--verbose") ;;
-    --*)       ;;   # ignore unknown flags
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry)
+      EXTRA_FLAGS+=("--dry-run")
+      shift
+      ;;
+    --verbose)
+      shift
+      ;;
+    --quiet)
+      EXTRA_FLAGS=("${(@)EXTRA_FLAGS:#--verbose}")
+      EXTRA_FLAGS+=("--quiet")
+      shift
+      ;;
+    --max-steps|--model|--temperature|--token-budget|--agent-mode|--output-dir|--config)
+      EXTRA_FLAGS+=("$1" "$2")
+      shift 2
+      ;;
+    --max-steps=*|--model=*|--temperature=*|--token-budget=*|--agent-mode=*|--output-dir=*|--config=*)
+      EXTRA_FLAGS+=("$1")
+      shift
+      ;;
+    --*)
+      EXTRA_FLAGS+=("$1")
+      shift
+      ;;
     *)
       if [[ $POSITIONAL -eq 0 ]]; then
-        REPO_PATH="$arg"; POSITIONAL=1
+        REPO_PATH="$1"
+        POSITIONAL=1
       elif [[ $POSITIONAL -eq 1 ]]; then
-        ISSUE_PATH="$arg"; POSITIONAL=2
+        ISSUE_PATH="$1"
+        POSITIONAL=2
+      else
+        EXTRA_FLAGS+=("$1")
       fi
+      shift
       ;;
   esac
 done
@@ -60,9 +86,13 @@ if [[ -f "$ZENITH_HOME/.env" ]]; then
   done < "$ZENITH_HOME/.env"
 fi
 
+KEY_COUNT=$(grep -c -E '^AI_API_KEY(_[0-9]+)?=' "$ZENITH_HOME/.env" 2>/dev/null || echo "1")
+
 # ── Run ──────────────────────────────────────────────────────────────────────
 echo ""
-echo "  ⚡ zicode → Zenith Harness"
+echo "  ⚡ zicode → Zenith AI Engine"
+echo "  Model : gemini-3.5-flash-lite (cascade: 3.5-flash → 3.6-flash)"
+echo "  Pool  : $KEY_COUNT active keys (~$(( KEY_COUNT * 15 )) RPM capacity)"
 echo "  Repo  : $REPO_PATH"
 echo "  Issue : $ISSUE_PATH"
 [[ ${#EXTRA_FLAGS[@]} -gt 0 ]] && echo "  Flags : ${EXTRA_FLAGS[*]}"

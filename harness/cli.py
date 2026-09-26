@@ -44,8 +44,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--model",
         type=str,
-        default="gemini-3.5-flash",
-        help="Model identifier (e.g., gemini-3.5-flash, gemini-3.5-flash-lite)",
+        default=None,
+        help="Model override (default: uses harness_config.yaml setting)",
     )
     parser.add_argument(
         "--temperature",
@@ -67,9 +67,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Agent mode: auto-select by complexity, single ReAct agent, or full multi-agent pool",
     )
     parser.add_argument(
+        "-v",
         "--verbose",
         action="store_true",
         help="Stream real-time cost, token utilization, and telemetry events to stdout",
+    )
+    parser.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="Run silently without streaming live telemetry",
     )
     parser.add_argument(
         "--dry-run",

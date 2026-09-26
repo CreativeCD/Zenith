@@ -5,9 +5,12 @@ Tests run_bash_sandboxed (timeout, memory, blocklist, 200-line cap) and
 run_test_suite (pytest runner, exit codes, filter, flags, 80-line cap).
 """
 
+import shlex
 import sys
 from harness.contracts import ErrorCode, ResultStatus
 from harness.tools.executor import run_bash_sandboxed, run_test_suite
+
+PY_EXEC = shlex.quote(sys.executable)
 
 
 def test_run_bash_sandboxed_success(tmp_path):
@@ -21,7 +24,7 @@ def test_run_bash_sandboxed_success(tmp_path):
 def test_run_bash_sandboxed_exit_code(tmp_path):
     """Verify non-zero exit code produces FAIL status and preserves code."""
     res = run_bash_sandboxed(
-        f"{sys.executable} -c 'import sys; sys.exit(42)'",
+        f"{PY_EXEC} -c 'import sys; sys.exit(42)'",
         repo_root=str(tmp_path),
     )
     assert res.status == ResultStatus.FAIL
@@ -57,7 +60,7 @@ def test_run_bash_sandboxed_timeout(tmp_path):
     """Verify commands exceeding timeout are terminated and return TIMEOUT error."""
     # Sleep 3 seconds with 1 second timeout
     res = run_bash_sandboxed(
-        f"{sys.executable} -c 'import time; time.sleep(3)'",
+        f"{PY_EXEC} -c 'import time; time.sleep(3)'",
         repo_root=str(tmp_path),
         timeout_sec=1,
     )
@@ -71,7 +74,7 @@ def test_run_bash_sandboxed_200_line_truncation(tmp_path):
     # Generate 300 lines of output
     script = "for i in range(1, 301): print(f'line_{i}')"
     res = run_bash_sandboxed(
-        f"{sys.executable} -c \"{script}\"",
+        f"{PY_EXEC} -c \"{script}\"",
         repo_root=str(tmp_path),
     )
     assert res.status == ResultStatus.SUCCESS
@@ -89,7 +92,7 @@ def test_run_bash_sandboxed_cwd(tmp_path):
     marker.write_text("zenith_marker_123")
 
     res = run_bash_sandboxed(
-        f"{sys.executable} -c 'import pathlib; print(pathlib.Path(\"marker.txt\").read_text())'",
+        f"{PY_EXEC} -c 'import pathlib; print(pathlib.Path(\"marker.txt\").read_text())'",
         repo_root=str(tmp_path),
     )
     assert res.status == ResultStatus.SUCCESS

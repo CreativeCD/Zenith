@@ -3,21 +3,30 @@
 # All values overridable by CLI flags or environment variables.
 
 model:
-  name: "gemini-3.5-flash"          # Primary model (use gemini-3.5-flash-lite for cost-saving)
-  plan_model: null                   # If set, use for PLAN phase (e.g., gemini-3.5-flash-lite)
-  base_url: null                     # null = default SDK endpoint
+  name: "gemini-3.5-flash-lite"        # Primary model: free-tier high quota + fast throughput
+  fallback_chain:                      # Auto-cascade fallback on rate limit / quota exhaustion
+    - "gemini-3.5-flash"
+    - "gemini-3.6-flash"
+  plan_model: null                      # If set, use a different model for PLAN phase
+  base_url: null                        # null = default SDK endpoint
   temperature_plan: 0.1
   temperature_act: 0.0
   temperature_reflect: 0.05
   temperature_summarize: 0.0
-  seed: 42                           # For reproducibility
-  max_output_tokens: 4096
-  enable_thinking: false             # Enable only for PLAN on HIGH complexity
-  use_structured_output: true        # JSON schema mode for tool calls
+  seed: 42                              # For reproducibility
+  max_output_tokens: 65536              # Full 64K output token ceiling
+  max_continuations: 3                  # Anti-truncation self-healing continuation retries
+  reasoning_effort_plan: "high"         # 24,576 tokens thinking budget for deep strategic planning
+  reasoning_effort_act: "low"           # 2,048 tokens thinking budget for rapid tool calls
+  reasoning_effort_reflect: "medium"    # 8,192 tokens thinking budget for observation analysis
+  reasoning_effort_recovery: "high"     # 24,576 tokens thinking budget for root-cause recovery
+  reasoning_effort_summarize: "none"    # 0 tokens for pure compression without latency
+  enable_thinking: true                 # Enabled by default with dynamic per-phase budgets
+  use_structured_output: true           # JSON schema mode for tool calls
 
 context:
-  max_context_tokens: 32000
-  response_reserve_tokens: 4000
+  max_context_tokens: 128000           # Expanded 128K token ceiling
+  response_reserve_tokens: 8000
   persona_budget_tokens: 300
   goal_budget_tokens: 200
   repo_context_budget_tokens: 1000
@@ -30,7 +39,7 @@ context:
   kv_cache_enabled: true             # Keep PERSONA+GOAL byte-identical for cache reuse
 
 agent:
-  max_steps: 25                      # Override with --max-steps
+  max_steps: 15                      # Free tier: keep under 20 req/day limit. Override: --max-steps 25
   max_plan_revisions: 3
   max_loop_count: 3
   agent_mode: "auto"                 # auto | single | multi

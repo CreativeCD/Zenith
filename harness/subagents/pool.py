@@ -43,6 +43,29 @@ class SubagentBase:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
+    async def _call_model(
+        self,
+        system_prompt: str,
+        user_message: str,
+        max_output_tokens: int = 2048,
+        temperature: float = 0.0,
+        reasoning_effort: str = "low",
+    ) -> Any:
+        import inspect
+        kwargs: dict[str, Any] = {
+            "system_prompt": system_prompt,
+            "user_message": user_message,
+            "temperature": temperature,
+            "max_output_tokens": max_output_tokens,
+        }
+        sig = inspect.signature(self.model_adapter.complete)
+        accepts_var = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+        if "reasoning_effort" in sig.parameters or accepts_var:
+            kwargs["reasoning_effort"] = reasoning_effort
+        if not accepts_var:
+            kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
+        return await self.model_adapter.complete(**kwargs)
+
 
 class ScoutSubagent(SubagentBase):
     """Scout Agent: Explores repo index and identifies root causes and strategies."""
@@ -83,10 +106,11 @@ class ScoutSubagent(SubagentBase):
         )
         user_message = _truncate_to_budget(user_message, self.budget_tokens)
 
-        response = await self.model_adapter.complete(
+        response = await self._call_model(
             system_prompt=system_prompt,
             user_message=user_message,
             max_output_tokens=2048,
+            reasoning_effort="low",
         )
 
         report_path = self.output_dir / "scout_report.md"
@@ -127,10 +151,11 @@ class ArchitectSubagent(SubagentBase):
         )
         user_message = _truncate_to_budget(user_message, self.budget_tokens)
 
-        response = await self.model_adapter.complete(
+        response = await self._call_model(
             system_prompt=system_prompt,
             user_message=user_message,
             max_output_tokens=2048,
+            reasoning_effort="high",
         )
 
         plan_path = self.output_dir / "architecture_plan.md"
@@ -170,10 +195,11 @@ class CoderSubagent(SubagentBase):
         )
         user_message = _truncate_to_budget(user_message, self.budget_tokens)
 
-        response = await self.model_adapter.complete(
+        response = await self._call_model(
             system_prompt=system_prompt,
             user_message=user_message,
             max_output_tokens=3000,
+            reasoning_effort="low",
         )
 
         patch_content = response.content.strip()
@@ -226,10 +252,11 @@ class CriticSubagent(SubagentBase):
         )
         user_message = _truncate_to_budget(user_message, self.budget_tokens)
 
-        response = await self.model_adapter.complete(
+        response = await self._call_model(
             system_prompt=system_prompt,
             user_message=user_message,
             max_output_tokens=2048,
+            reasoning_effort="medium",
         )
 
         critic_path = self.output_dir / "critic_report.md"

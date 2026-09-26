@@ -130,10 +130,12 @@ def test_tool_engine_execution_flow(tmp_path):
     """Verify tool engine correctly routes execution tools."""
     engine = ToolEngine(repo_root=str(tmp_path))
 
+    import shlex
+    py_exec = shlex.quote(sys.executable)
     call = ToolCall(
         tool="run_bash_sandboxed",
         reasoning="Run simple echo in sandbox",
-        args={"command": f"{sys.executable} -c 'print(\"hello from engine\")'"},
+        args={"command": f"{py_exec} -c 'print(\"hello from engine\")'"},
     )
     res = engine.execute(call)
     assert res.status == ResultStatus.SUCCESS
