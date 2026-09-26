@@ -251,9 +251,44 @@ class ZenithREPL:
             else:
                 break
 
+    def _ensure_api_key(self) -> bool:
+        """Prompt user for Gemini API key if no keys are found in environment."""
+        if self.adapter.key_pool.total_keys > 0:
+            return True
+
+        console.print(Panel(
+            "[yellow bold]🔑 No Google Gemini API key found![/yellow bold]\n\n"
+            "Zenith only requires [bold cyan]1 free API key[/bold cyan] from Google AI Studio.\n"
+            "Get your free key in 15 seconds at: [bold link=https://aistudio.google.com/]https://aistudio.google.com/[/bold link]",
+            border_style="yellow",
+            expand=False,
+        ))
+
+        try:
+            key_input = input("\n👉 Paste your Gemini API key (or press Ctrl+C to cancel): ").strip()
+            if not key_input:
+                console.print("[red]No key provided. Exiting.[/red]")
+                return False
+
+            env_path = Path(self.repo_path) / ".env"
+            with open(env_path, "a", encoding="utf-8") as f:
+                f.write(f"\nAI_API_KEY={key_input}\n")
+            os.environ["AI_API_KEY"] = key_input
+
+            from harness.adapters.key_pool import KeyPoolManager
+            self.adapter.key_pool = KeyPoolManager(keys=[key_input])
+            console.print("[bold green]✅ API key saved and activated! You're ready to code.[/bold green]\n")
+            return True
+        except (KeyboardInterrupt, EOFError):
+            console.print("\n[dim]Cancelled.[/dim]")
+            return False
+
     async def start(self) -> None:
         """Main REPL loop."""
         self.print_welcome_banner()
+
+        if not self._ensure_api_key():
+            return
 
         while self.session_active:
             try:
