@@ -47,3 +47,6 @@ htmlcov/
 .vscode/
 *.swp
 *~
+
+# External Tools
+Gemini 7 API SWITCH CLI/
