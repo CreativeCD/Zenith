@@ -335,12 +335,20 @@ class IssueParser:
                     "- test_filter (test command or string)\n\n"
                     f"Issue text:\n{raw_text[:2000]}"
                 )
-                response = await self.model_adapter.complete(
-                    system_prompt="You are an expert software engineering issue parser. Output valid JSON only.",
-                    user_message=extraction_prompt,
-                    temperature=0.0,
-                    max_output_tokens=500,
-                )
+                import inspect
+                call_kwargs: dict[str, Any] = {
+                    "system_prompt": "You are an expert software engineering issue parser. Output valid JSON only.",
+                    "user_message": extraction_prompt,
+                    "temperature": 0.0,
+                    "max_output_tokens": 500,
+                }
+                sig = inspect.signature(self.model_adapter.complete)
+                accepts_var = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+                if "reasoning_effort" in sig.parameters or accepts_var:
+                    call_kwargs["reasoning_effort"] = "medium"
+                if not accepts_var:
+                    call_kwargs = {k: v for k, v in call_kwargs.items() if k in sig.parameters}
+                response = await self.model_adapter.complete(**call_kwargs)
                 if response.content:
                     # Clean up JSON if wrapped in markdown code blocks
                     content_clean = re.sub(r"^```(?:json)?\s*", "", response.content.strip())

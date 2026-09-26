@@ -37,6 +37,7 @@ class ModelAdapter(Protocol):
         max_output_tokens: int = 4096,
         use_structured_output: bool = True,
         seed: int | None = 42,
+        reasoning_effort: str = "low",
     ) -> ModelResponse:
         """Execute chat completion request with optional tool declarations."""
         ...

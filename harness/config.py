@@ -32,6 +32,16 @@ class ModelConfig:
     enable_thinking: bool = False
     use_structured_output: bool = True
     api_key: str | None = field(default=None, repr=False)
+    api_keys: list[str] = field(default_factory=list, repr=False)
+    fallback_chain: list[str] = field(
+        default_factory=lambda: ["gemini-3.5-flash", "gemini-3.5-flash-lite"]
+    )
+    reasoning_effort_plan: str = "high"
+    reasoning_effort_act: str = "low"
+    reasoning_effort_reflect: str = "medium"
+    reasoning_effort_recovery: str = "high"
+    reasoning_effort_summarize: str = "none"
+    max_continuations: int = 3
 
 
 @dataclass
@@ -134,14 +144,16 @@ class HarnessConfig:
     def validate(self) -> None:
         """Validate paths, boundaries, and required environment credentials."""
         # API Key check (unless dry_run)
-        if not self.dry_run and not self.model.api_key:
-            api_key = (os.environ.get("AI_API_KEY") or "").strip()
-            if not api_key:
+        if not self.dry_run and not self.model.api_keys and not self.model.api_key:
+            from harness.adapters.key_pool import KeyPoolManager
+            env_keys = KeyPoolManager._load_keys_from_env()
+            if not env_keys:
                 raise OSError(
                     "AI_API_KEY environment variable is not set or empty. "
                     "Define AI_API_KEY in your environment or .env file."
                 )
-            self.model.api_key = api_key
+            self.model.api_keys = env_keys
+            self.model.api_key = env_keys[0]
 
         # GitHub token resolution
         if not self.external_skills.github_token:
@@ -231,7 +243,13 @@ def load_config(
         if cli_args.get("output_dir"):
             cfg.telemetry.output_dir = cli_args["output_dir"]
 
-    # Load API Key from environment if present
-    cfg.model.api_key = os.environ.get("AI_API_KEY")
+    # Load API Keys from environment if present
+    from harness.adapters.key_pool import KeyPoolManager
+    env_keys = KeyPoolManager._load_keys_from_env()
+    if env_keys:
+        cfg.model.api_keys = env_keys
+        cfg.model.api_key = env_keys[0]
+    else:
+        cfg.model.api_key = os.environ.get("AI_API_KEY")
 
     return cfg

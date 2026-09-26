@@ -156,7 +156,10 @@ class Orchestrator:
         self.config = config or HarnessConfig()
         self.model_adapter = model_adapter or GeminiAdapter(
             api_key=self.config.model.api_key,
+            api_keys=self.config.model.api_keys,
             model_name=self.config.model.name,
+            fallback_chain=self.config.model.fallback_chain,
+            max_continuations=getattr(self.config.model, "max_continuations", 3),
         )
 
         out_dir = self.config.telemetry.output_dir
@@ -260,6 +263,34 @@ class Orchestrator:
                 return asyncio.run(self.run_async(issue_text))
         except Exception:
             return asyncio.run(self.run_async(issue_text))
+
+    async def _call_model(
+        self,
+        system_prompt: str,
+        user_message: str,
+        temperature: float = 0.0,
+        tools: list[dict[str, Any]] | None = None,
+        reasoning_effort: str = "low",
+    ) -> ModelResponse:
+        """Call model adapter with parameter filtering for mock/legacy adapters."""
+        import inspect
+        kwargs: dict[str, Any] = {
+            "system_prompt": system_prompt,
+            "user_message": user_message,
+            "temperature": temperature,
+        }
+        if tools is not None:
+            kwargs["tools"] = tools
+
+        sig = inspect.signature(self.model_adapter.complete)
+        accepts_var = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+        if "reasoning_effort" in sig.parameters or accepts_var:
+            kwargs["reasoning_effort"] = reasoning_effort
+
+        if not accepts_var:
+            kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
+
+        return await self.model_adapter.complete(**kwargs)
 
     async def run_async(self, issue_text: str) -> SessionResult:
         """Asynchronously execute full autonomous ReAct state machine."""
@@ -388,10 +419,11 @@ class Orchestrator:
             "}\n"
         )
         prompt_sections = self.context_manager.build_prompt(ranked_files=self.ranked_files)
-        plan_response = await self.model_adapter.complete(
+        plan_response = await self._call_model(
             system_prompt=prompt_sections.persona,
             user_message=prompt_sections.issue_goal + "\n\n" + plan_prompt,
             temperature=self.config.model.temperature_plan,
+            reasoning_effort=self.config.model.reasoning_effort_plan,
         )
         total_tokens += plan_response.tokens_in + plan_response.tokens_out
         total_cost_usd += getattr(plan_response, "cost_usd", 0.0)
@@ -444,11 +476,18 @@ class Orchestrator:
             else:
                 user_msg = f"Begin execution for goal: {issue_plan.primary_goal}. Next step: {current_step_desc}"
 
+            effort = self.config.model.reasoning_effort_act
+            if hasattr(self, "recovery_engine") and getattr(self.recovery_engine, "in_recovery", False):
+                effort = self.config.model.reasoning_effort_recovery
+            elif last_observation:
+                effort = self.config.model.reasoning_effort_reflect
+
             prompt_sections = self.context_manager.build_prompt(ranked_files=self.ranked_files)
-            turn_response = await self.model_adapter.complete(
+            turn_response = await self._call_model(
                 system_prompt=prompt_sections.persona,
                 user_message=user_msg,
                 temperature=self.config.model.temperature_act,
+                reasoning_effort=effort,
             )
             total_tokens += turn_response.tokens_in + turn_response.tokens_out
             total_cost_usd += getattr(turn_response, "cost_usd", 0.0)

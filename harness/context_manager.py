@@ -648,12 +648,21 @@ class RollingSummarizer:
 
         prompt = self.build_compression_prompt(turns_to_compress, current_memory)
         try:
-            response = await model_adapter.complete(
-                system_prompt="You are Zenith's context compression engine. Follow the strict output format.",
-                user_message=prompt,
-                temperature=0.0,
-                max_output_tokens=600,
-            )
+            import inspect
+            sig = inspect.signature(model_adapter.complete)
+            kwargs: dict[str, Any] = {
+                "system_prompt": "You are Zenith's context compression engine. Follow the strict output format.",
+                "user_message": prompt,
+                "temperature": 0.0,
+                "max_output_tokens": 600,
+            }
+            accepts_var = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+            if "reasoning_effort" in sig.parameters or accepts_var:
+                kwargs["reasoning_effort"] = "none"
+            if not accepts_var:
+                kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
+
+            response = await model_adapter.complete(**kwargs)
             content = response.content.strip()
 
             # Parse structured response into WorkingMemory

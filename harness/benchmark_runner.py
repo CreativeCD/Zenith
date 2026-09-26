@@ -63,7 +63,25 @@ class BenchmarkModelAdapter(ModelAdapter):
         temperature: float = 0.0,
         max_tokens: int = 4096,
         tools: list | None = None,
+        **kwargs: Any,
     ) -> ModelResponse:
+        # Handle subagents without consuming orchestrator turn sequence
+        if "Scout Subagent" in system_prompt:
+            return ModelResponse(
+                content=f"## Relevant Files\n- {self.target_file}\n## Suspected Root Cause Location\n{self.target_file}\n## Recommended Fix Strategy\nPatch {self.target_file}",
+                tokens_in=100, tokens_out=50,
+            )
+        if "Architect Subagent" in system_prompt:
+            return ModelResponse(
+                content=f"## Fix Strategy\nPatch {self.target_file}\n## Files to Modify\n- {self.target_file}",
+                tokens_in=100, tokens_out=50,
+            )
+        if "Coder Subagent" in system_prompt:
+            patch = f"--- a/{self.target_file}\n+++ b/{self.target_file}\n@@ -1,3 +1,3 @@\n-{self.old_code}\n+{self.new_code}\n"
+            return ModelResponse(content=patch, tokens_in=100, tokens_out=50)
+        if "Critic Subagent" in system_prompt:
+            return ModelResponse(content="## Recommendation: APPROVE\nVerified clean.", tokens_in=100, tokens_out=50)
+
         self.turn += 1
 
         if self.turn == 1:
