@@ -128,8 +128,18 @@ def main(args_list: list[str] | None = None) -> int:
         output_dir=config.telemetry.output_dir,
     )
 
+    issue_content = ""
+    issue_file = Path(config.issue_path)
+    if issue_file.exists() and issue_file.is_file():
+        try:
+            issue_content = issue_file.read_text(encoding="utf-8")
+        except OSError:
+            issue_content = config.issue_path
+    else:
+        issue_content = config.issue_path
+
     telemetry.log_session_start(
-        issue_id=Path(config.issue_path).stem if Path(config.issue_path).exists() else "unknown",
+        issue_id=issue_file.stem if issue_file.exists() else "unknown",
         repo_path=config.repo_path,
     )
 
@@ -145,12 +155,44 @@ def main(args_list: list[str] | None = None) -> int:
         print("=" * 65 + "\n")
 
     if config.dry_run:
-        prompt_sections = context_mgr.build_prompt()
-        print(f"Dry run complete: configuration loaded, validated, telemetry initialized, and context manager ready ({prompt_sections.total_tokens} base tokens).")
+        from harness.issue_parser import IssueParser
+        from harness.repo_intel import RepoIndexBuilder, SemanticRanker
+
+        parser = IssueParser(config=config)
+        plan = parser.parse_issue(issue_content, repo_path=config.repo_path)
+
+        builder = RepoIndexBuilder(
+            repo_path=config.repo_path,
+            output_dir=f"{config.telemetry.output_dir}/repo_index",
+        )
+        repo_index = builder.build_index()
+
+        ranker = SemanticRanker()
+        suspected_paths = [f.path for f in plan.suspected_files]
+        ranked_files = ranker.rank_files(
+            query=plan.primary_goal,
+            repo_index=repo_index,
+            repo_path=config.repo_path,
+            suspected_files=suspected_paths,
+            top_n=5,
+        )
+
+        context_mgr.set_issue(plan)
+        prompt_sections = context_mgr.build_prompt(ranked_files=ranked_files)
+
+        print("Dry run complete:")
+        print(f"  Issue Goal   : {plan.primary_goal}")
+        print(f"  Complexity   : {plan.complexity_estimate.value} ({plan.estimated_steps} steps estimated)")
+        print(f"  Top Files    : {[f.path for f in ranked_files.files]}")
+        print(f"  Prompt Budget: {prompt_sections.total_tokens} tokens assembled.")
         return 0
 
-    print("Zenith harness initialized. Context Manager (Phase 2) active.")
-    return 0
+    from harness.orchestrator import Orchestrator
+
+    orchestrator = Orchestrator(config=config)
+    session_result = orchestrator.run(issue_text=issue_content)
+    print(f"Zenith harness run finished: {session_result.status.value} (Exit: {session_result.exit_code}, Steps: {session_result.total_steps}).")
+    return session_result.exit_code
 
 
 if __name__ == "__main__":

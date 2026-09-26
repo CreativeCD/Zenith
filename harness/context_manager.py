@@ -141,7 +141,7 @@ def get_token_encoder():
         try:
             import tiktoken
             _TIKTOKEN_ENCODER = tiktoken.get_encoding("cl100k_base")
-        except (ImportError, ValueError, RuntimeError, KeyError):
+        except Exception:
             _TIKTOKEN_ENCODER = False
     return _TIKTOKEN_ENCODER
 
@@ -309,8 +309,8 @@ def lossy_compress_working_memory(
         test_status=memory.test_status[:80],
         current_strategy=(memory.current_strategy[:100] + "...") if len(memory.current_strategy) > 100 else memory.current_strategy,
         lessons_learned=[
-            (l[:80] + "...") if len(l) > 80 else l
-            for l in memory.lessons_learned[:3]
+            (lesson[:80] + "...") if len(lesson) > 80 else lesson
+            for lesson in memory.lessons_learned[:3]
         ],
     )
     return compressed
@@ -560,7 +560,7 @@ class RollingSummarizer:
         turns_text = "\n".join(str(t) for t in turns_to_compress)
         files_str = "\n".join(f"{k}: {v}" for k, v in current_memory.files_examined.items()) or "None"
         edits_str = "\n".join(current_memory.edits_applied) or "None"
-        lessons_str = "\n".join(f"- {l}" for l in current_memory.lessons_learned) or "- None"
+        lessons_str = "\n".join(f"- {item}" for item in current_memory.lessons_learned) or "- None"
 
         return SUMMARIZER_PROMPT_TEMPLATE.format(
             goal=current_memory.goal or "Solve GitHub Issue",
