@@ -3,8 +3,8 @@
 # All values overridable by CLI flags or environment variables.
 
 model:
-  name: "gemini-3.5-flash"          # Primary model (use gemini-3.5-flash-lite for cost-saving)
-  plan_model: null                   # If set, use for PLAN phase (e.g., gemini-3.5-flash-lite)
+  name: "gemini-3.5-flash-lite"     # Free tier: 200 req/min, 1000 req/day (use gemini-3.5-flash for paid)
+  plan_model: null                   # If set, use a different model for PLAN phase
   base_url: null                     # null = default SDK endpoint
   temperature_plan: 0.1
   temperature_act: 0.0
@@ -30,7 +30,7 @@ context:
   kv_cache_enabled: true             # Keep PERSONA+GOAL byte-identical for cache reuse
 
 agent:
-  max_steps: 25                      # Override with --max-steps
+  max_steps: 15                      # Free tier: keep under 20 req/day limit. Override: --max-steps 25
   max_plan_revisions: 3
   max_loop_count: 3
   agent_mode: "auto"                 # auto | single | multi

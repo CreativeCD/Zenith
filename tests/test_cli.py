@@ -9,7 +9,7 @@ def test_cli_parser_defaults():
     assert args.repo == "."
     assert args.issue == "issue.txt"
     assert args.max_steps == 25
-    assert args.model == "gemini-3.5-flash"
+    assert args.model == "gemini-3.5-flash-lite"
     assert args.agent_mode == "auto"
     assert args.dry_run is False
 

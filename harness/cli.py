@@ -44,8 +44,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--model",
         type=str,
-        default="gemini-3.5-flash",
-        help="Model identifier (e.g., gemini-3.5-flash, gemini-3.5-flash-lite)",
+        default="gemini-3.5-flash-lite",
+        help="Model (gemini-3.5-flash-lite for free tier, gemini-3.5-flash for paid)",
     )
     parser.add_argument(
         "--temperature",
