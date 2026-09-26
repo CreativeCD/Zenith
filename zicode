@@ -1,0 +1,74 @@
+#!/usr/bin/env zsh
+# zicode — Zenith AI Coding Harness launcher
+# Usage:
+#   zicode                          → runs on current dir with issue.txt
+#   zicode /path/to/repo            → custom repo, default issue.txt
+#   zicode /path/to/repo my.txt     → custom repo + issue file
+#   zicode --dry                    → dry-run (no API calls, no cost)
+#   zicode --verbose                → verbose output with token stream
+#   zicode -h                       → show help
+
+ZENITH_HOME="/Users/vamsikrishna/Dev Projects/i proj/Zenith"
+PYTHON="/opt/anaconda3/bin/python3"
+
+# ── Help ────────────────────────────────────────────────────────────────────
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+  echo ""
+  echo "  ╔══════════════════════════════════════╗"
+  echo "  ║   zicode — Zenith Harness Launcher   ║"
+  echo "  ╚══════════════════════════════════════╝"
+  echo ""
+  echo "  Usage:"
+  echo "    zicode                          Run on current dir with issue.txt"
+  echo "    zicode /path/to/repo            Custom repo, uses ./issue.txt"
+  echo "    zicode /path/to/repo issue.txt  Custom repo and issue file"
+  echo "    zicode --dry                    Dry-run (no API calls)"
+  echo "    zicode --verbose                Show live token/cost stream"
+  echo "    zicode -h                       This help message"
+  echo ""
+  echo "  Output: .harness/report.md, .harness/telemetry.jsonl"
+  echo ""
+  exit 0
+fi
+
+# ── Parse args ───────────────────────────────────────────────────────────────
+REPO_PATH="."
+ISSUE_PATH="issue.txt"
+EXTRA_FLAGS=()
+POSITIONAL=0
+
+for arg in "$@"; do
+  case "$arg" in
+    --dry)     EXTRA_FLAGS+=("--dry-run") ;;
+    --verbose) EXTRA_FLAGS+=("--verbose") ;;
+    --*)       ;;   # ignore unknown flags
+    *)
+      if [[ $POSITIONAL -eq 0 ]]; then
+        REPO_PATH="$arg"; POSITIONAL=1
+      elif [[ $POSITIONAL -eq 1 ]]; then
+        ISSUE_PATH="$arg"; POSITIONAL=2
+      fi
+      ;;
+  esac
+done
+
+# ── Load .env secrets ────────────────────────────────────────────────────────
+if [[ -f "$ZENITH_HOME/.env" ]]; then
+  while IFS= read -r line; do
+    [[ "$line" =~ ^#.*$ || -z "$line" ]] && continue
+    export "$line"
+  done < "$ZENITH_HOME/.env"
+fi
+
+# ── Run ──────────────────────────────────────────────────────────────────────
+echo ""
+echo "  ⚡ zicode → Zenith Harness"
+echo "  Repo  : $REPO_PATH"
+echo "  Issue : $ISSUE_PATH"
+[[ ${#EXTRA_FLAGS[@]} -gt 0 ]] && echo "  Flags : ${EXTRA_FLAGS[*]}"
+echo ""
+
+cd "$ZENITH_HOME" && "$PYTHON" -m harness.cli \
+  --repo "$REPO_PATH" \
+  --issue "$ISSUE_PATH" \
+  "${EXTRA_FLAGS[@]}"
