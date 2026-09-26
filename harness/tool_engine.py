@@ -26,6 +26,7 @@ from harness.contracts import (
     ToolCall,
     ToolResult,
 )
+from harness.skill_retriever import SkillRetriever
 from harness.telemetry import TelemetryWriter
 from harness.tools.ast_tools import (
     find_references,
@@ -188,10 +189,15 @@ class ToolEngine:
         repo_root: str = ".",
         deduplicator: Optional[ToolCallDeduplicator] = None,
         telemetry: Optional[TelemetryWriter] = None,
+        skill_retriever: Optional[SkillRetriever] = None,
     ):
         self.repo_root = str(Path(repo_root).resolve())
         self.deduplicator = deduplicator or ToolCallDeduplicator(capacity=10)
         self.telemetry = telemetry
+        self.skill_retriever = skill_retriever or SkillRetriever(
+            telemetry=self.telemetry,
+            cache_dir=str(Path(self.repo_root) / ".harness" / "skill_cache"),
+        )
 
     def get_tool_definitions(self) -> List[Dict[str, Any]]:
         """Return function calling declarations compatible with Gemini, OpenAI, and Claude."""
@@ -261,7 +267,7 @@ class ToolEngine:
 
         # Stage 5 & 6: Dispatch tool execution
         try:
-            result = self._dispatch(tool_name, args)
+            result = self._dispatch(tool_name, args, step=step)
         except Exception as e:
             logger.exception("Unexpected exception dispatching tool '%s': %s", tool_name, e)
             result = ToolResult(
@@ -308,7 +314,7 @@ class ToolEngine:
 
         return result
 
-    def _dispatch(self, tool_name: str, args: Dict[str, Any]) -> ToolResult:
+    def _dispatch(self, tool_name: str, args: Dict[str, Any], step: int = 0) -> ToolResult:
         """Route verified call to corresponding tool implementation."""
         root = self.repo_root
 
@@ -409,16 +415,23 @@ class ToolEngine:
             )
 
         elif tool_name == "fetch_external_skill":
-            q = args.get("query", "")
-            msg = f"SKILL_CACHE: External skill query '{q}' acknowledged (Phase 5 retriever active)."
+            source_type = str(args.get("source_type") or "swe_bench")
+            q = str(args.get("query") or "")
+            max_tokens = _safe_int(args.get("max_tokens"), 400)
+            snippet = self.skill_retriever.fetch_skill(
+                source_type=source_type,
+                query=q,
+                max_tokens=max_tokens,
+                step=step,
+            )
             return ToolResult(
                 tool="fetch_external_skill",
                 args_hash="",
                 status=ResultStatus.SUCCESS,
-                raw_output=msg,
-                truncated_output=msg,
-                tokens_in_raw=max(1, len(msg) // 4),
-                tokens_in_truncated=max(1, len(msg) // 4),
+                raw_output=snippet,
+                truncated_output=snippet,
+                tokens_in_raw=max(1, len(snippet) // 4),
+                tokens_in_truncated=max(1, len(snippet) // 4),
             )
 
         return ToolResult(

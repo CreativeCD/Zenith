@@ -346,6 +346,7 @@ def run_test_suite(
             )
 
     preexec = _make_preexec(memory_limit_mb=1024)
+    env = {**os.environ, "PYTHONPATH": f"{resolved_root}:{os.environ.get('PYTHONPATH', '')}"}
 
     try:
         proc = subprocess.Popen(
@@ -355,6 +356,7 @@ def run_test_suite(
             stderr=subprocess.STDOUT,
             text=True,
             preexec_fn=preexec,
+            env=env,
         )
         stdout, _ = proc.communicate(timeout=timeout_sec)
         exit_code = proc.returncode

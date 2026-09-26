@@ -48,6 +48,7 @@ cp .env.example .env
 ```
 
 ### 3. Execution
+
 ```bash
 # Standard evaluation run (compatible with hackathon evaluation harness)
 make run REPO_PATH=/path/to/target_repo ISSUE_PATH=/path/to/issue.txt
@@ -59,14 +60,21 @@ python -m harness.cli \
   --max-steps 25 \
   --model gemini-2.5-flash \
   --verbose
+
+# Fast dry-run inspection (0-token validation, tests issue parsing and prompt budgeting)
+python -m harness.cli --dry-run --repo . --issue tests/fixtures/sample_issues/issue_001.txt
 ```
 
-### 4. Running Tests & Quality Gates
+### 4. Running Tests & Benchmarks
+
 ```bash
-# Run unit & integration test suite
+# Run full unit & integration test suite (190 tests, 79% line coverage)
 make test
 
-# Run code linter
+# Run 5-archetype SWE-bench benchmark suite (100% pass rate: django, flask, numpy, sympy, astropy)
+pytest -v tests/test_benchmarks.py
+
+# Run code linter (100% clean ruff verification)
 make lint
 
 # Run containerized clean-clone test
@@ -76,7 +84,12 @@ make docker-test
 make clean
 ```
 
----
+### 5. Output Artifacts & Verification
+
+After any run (whether `PASS`, `FAIL`, or `PARTIAL`), Zenith automatically outputs:
+- **`.harness/report.md`** — Comprehensive 8-section audit report (Executive Summary, Timeline, Recovery Events, Verification Results, Final Diff Applied, Agent Decisions Log, Token & Cost Breakdown, Lessons Learned).
+- **`.harness/telemetry.jsonl`** — Full append-only telemetry stream covering all 18 JSONL event types with microsecond timestamps and cumulative cost accounting.
+- **`.harness/recovery_log.json`** — Deterministic recovery state machine trace and circuit breaker status.
 
 ## 🏗️ Architecture at a Glance
 

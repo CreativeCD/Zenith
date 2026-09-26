@@ -12,6 +12,7 @@ PRD §4.7 and architecture.md §12:
 
 import ast
 import json
+import os
 import py_compile
 import re
 import shlex
@@ -353,6 +354,7 @@ class VerificationGate:
 
         # Construct test command
         cmd = self._build_test_command(repo_path, test_filter, issue_plan)
+        env = {**os.environ, "PYTHONPATH": f"{repo_path}:{os.environ.get('PYTHONPATH', '')}"}
 
         try:
             proc = subprocess.run(
@@ -362,6 +364,7 @@ class VerificationGate:
                 cwd=repo_path,
                 timeout=120,
                 check=False,
+                env=env,
             )
             duration_ms = int((time.time() - start) * 1000)
 
@@ -402,6 +405,7 @@ class VerificationGate:
         test_runner = self._resolve_python_test_runner(repo_path)
         cmd = test_runner + ["-q"]
 
+        env = {**os.environ, "PYTHONPATH": f"{repo_path}:{os.environ.get('PYTHONPATH', '')}"}
         try:
             proc = subprocess.run(
                 cmd,
@@ -410,6 +414,7 @@ class VerificationGate:
                 cwd=repo_path,
                 timeout=180,
                 check=False,
+                env=env,
             )
             raw_output = proc.stdout + "\n" + proc.stderr
             current_failures = self._extract_pytest_failures(raw_output)
@@ -582,6 +587,7 @@ class VerificationGate:
                 "    sys.exit(42)\n"
             )
 
+            env = {**os.environ, "PYTHONPATH": f"{repo_path}:{os.environ.get('PYTHONPATH', '')}"}
             try:
                 proc = subprocess.run(
                     [python_bin, "-c", script],
@@ -590,6 +596,7 @@ class VerificationGate:
                     cwd=repo_path,
                     timeout=10,
                     check=False,
+                    env=env,
                 )
                 if proc.returncode != 0:
                     failures.append(
