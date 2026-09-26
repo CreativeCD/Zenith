@@ -21,6 +21,7 @@ class ModelResponse:
     latency_ms: int = 0
     model: str = ""
     finish_reason: str = "stop"
+    cost_usd: float = 0.0
 
 
 @runtime_checkable

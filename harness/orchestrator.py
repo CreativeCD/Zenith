@@ -37,6 +37,8 @@ from harness.report_generator import ReportGenerator
 from harness.skill_retriever import SkillRetriever
 from harness.subagents.pool import (
     ArchitectSubagent,
+    CoderSubagent,
+    CriticSubagent,
     ScoutSubagent,
 )
 from harness.telemetry import TelemetryWriter
@@ -264,6 +266,7 @@ class Orchestrator:
         start_time = time.perf_counter()
         total_tokens = 0
         cost_usd = 0.0
+        total_cost_usd = 0.0
 
         # ─── 1. INIT Phase ─────────────────────────────────────────────────
         self.current_phase = AgentPhase.INIT
@@ -291,6 +294,16 @@ class Orchestrator:
         self.context_manager.set_issue(issue_plan)
         self.ranked_files = ranked_files
 
+        # ── PRD §2 rubric item 1: Write issue_plan.json BEFORE turn 1 ────────
+        try:
+            out_dir = Path(self.config.telemetry.output_dir)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            issue_plan_path = out_dir / "issue_plan.json"
+            issue_plan_path.write_text(issue_plan.to_json(indent=2), encoding="utf-8")
+            logger.info("issue_plan.json written → %s", issue_plan_path)
+        except Exception as e:
+            logger.warning("Could not write issue_plan.json: %s", e)
+
         # Startup Pre-fetch (Layer 6)
         if self.config.external_skills.enabled and self.config.external_skills.prefetch_at_startup:
             try:
@@ -301,9 +314,9 @@ class Orchestrator:
             except Exception:
                 pass
 
-        # ─── 2. Multi-Agent Subagent Coordination (MEDIUM / HIGH) ──────────
+        # ─── 2. Multi-Agent Subagent Coordination (MEDIUM / HIGH / VERY_HIGH) ─
         subagent_out_dir = self.config.telemetry.output_dir
-        if issue_plan.complexity_estimate in (Complexity.MEDIUM, Complexity.HIGH):
+        if issue_plan.complexity_estimate in (Complexity.MEDIUM, Complexity.HIGH, Complexity.VERY_HIGH):
             scout = ScoutSubagent(model_adapter=self.model_adapter, output_dir=subagent_out_dir)
             tree_text = Path(repo_index.file_tree_path).read_text(encoding="utf-8") if Path(repo_index.file_tree_path).exists() else ""
             sym_text = Path(repo_index.module_symbols_path).read_text(encoding="utf-8") if Path(repo_index.module_symbols_path).exists() else ""
@@ -315,18 +328,51 @@ class Orchestrator:
                     step=self.current_step,
                     phase=self.current_phase,
                 )
-                if issue_plan.complexity_estimate == Complexity.HIGH:
+                if issue_plan.complexity_estimate in (Complexity.HIGH, Complexity.VERY_HIGH):
                     architect = ArchitectSubagent(model_adapter=self.model_adapter, output_dir=subagent_out_dir)
                     scout_report_content = Path(scout_report_path).read_text(encoding="utf-8")
-                    await architect.run_async(issue_plan, scout_report_content)
+                    arch_report_path = await architect.run_async(issue_plan, scout_report_content)
                     self.telemetry.log_event(
                         event_type=EventType.SUBAGENT_SPAWN,
                         agent="architect",
                         step=self.current_step,
                         phase=self.current_phase,
                     )
-            except Exception:
-                pass
+                    # Coder + Critic for HIGH/VERY_HIGH (PRD §4.5 routing table)
+                    arch_report_content = Path(arch_report_path).read_text(encoding="utf-8") if Path(arch_report_path).exists() else scout_report_content
+                    coder = CoderSubagent(model_adapter=self.model_adapter, output_dir=subagent_out_dir)
+                    # Use first suspected file as primary coder target
+                    primary_file = issue_plan.suspected_files[0].path if issue_plan.suspected_files else "unknown.py"
+                    try:
+                        file_content = Path(self.config.repo_path, primary_file).read_text(encoding="utf-8")
+                    except OSError:
+                        file_content = "[file not readable]"
+                    await coder.run_async(
+                        target_file=primary_file,
+                        file_content=file_content,
+                        architecture_plan=arch_report_content,
+                        step=self.current_step,
+                    )
+                    self.telemetry.log_event(
+                        event_type=EventType.SUBAGENT_SPAWN,
+                        agent="coder",
+                        step=self.current_step,
+                        phase=self.current_phase,
+                    )
+                    critic = CriticSubagent(model_adapter=self.model_adapter, output_dir=subagent_out_dir)
+                    await critic.run_async(
+                        issue_plan=issue_plan,
+                        patches_applied=[arch_report_content],
+                        test_results="Pre-run — tests not yet executed.",
+                    )
+                    self.telemetry.log_event(
+                        event_type=EventType.SUBAGENT_SPAWN,
+                        agent="critic",
+                        step=self.current_step,
+                        phase=self.current_phase,
+                    )
+            except Exception as e:
+                logger.warning("Subagent coordination failed (non-fatal): %s", e)
 
         # ─── 3. PLAN Phase ─────────────────────────────────────────────────
         self.current_phase = AgentPhase.PLAN
@@ -348,6 +394,7 @@ class Orchestrator:
             temperature=self.config.model.temperature_plan,
         )
         total_tokens += plan_response.tokens_in + plan_response.tokens_out
+        total_cost_usd += getattr(plan_response, "cost_usd", 0.0)
 
         try:
             agent_plan = parse_plan(plan_response.content, output_dir=self.config.telemetry.output_dir)
@@ -404,6 +451,7 @@ class Orchestrator:
                 temperature=self.config.model.temperature_act,
             )
             total_tokens += turn_response.tokens_in + turn_response.tokens_out
+            total_cost_usd += getattr(turn_response, "cost_usd", 0.0)
 
             content = turn_response.content.strip()
 
@@ -534,7 +582,7 @@ class Orchestrator:
             exit_code=exit_code,
             total_steps=self.current_step,
             total_tokens=total_tokens,
-            total_cost_usd=cost_usd,
+            total_cost_usd=total_cost_usd,
             total_wall_time_ms=elapsed_ms,
             verification_result=verification_result,
         )

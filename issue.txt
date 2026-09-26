@@ -1,0 +1,39 @@
+Title: KeyError when calling `calculate_discount()` with missing customer tier
+
+## Description
+
+When `calculate_discount()` is called with a customer dict that does not have the `"tier"` key, 
+the function raises a `KeyError` instead of returning the default discount (0%).
+
+## Steps to Reproduce
+
+```python
+from billing.discounts import calculate_discount
+
+customer = {"id": 123, "name": "John Doe"}  # missing "tier" key
+discount = calculate_discount(customer)  # KeyError: 'tier'
+```
+
+## Expected Behavior
+
+`calculate_discount()` should return `0.0` (no discount) when `"tier"` is absent from the customer dict.
+
+## Actual Behavior
+
+```
+Traceback (most recent call last):
+  File "billing/discounts.py", line 42, in calculate_discount
+    tier = customer["tier"]
+KeyError: 'tier'
+```
+
+## Environment
+
+- Python 3.13
+- billing package v2.4.1
+
+## Acceptance Criteria
+
+1. `calculate_discount({"id": 123})` returns `0.0` without raising
+2. All existing discount tests still pass
+3. Add a regression test: `test_missing_tier_returns_zero_discount`
