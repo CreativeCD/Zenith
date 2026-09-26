@@ -8,8 +8,27 @@
 #   zicode --verbose                → verbose output with token stream
 #   zicode -h                       → show help
 
-ZENITH_HOME="/Users/vamsikrishna/Dev Projects/i proj/Zenith"
-PYTHON="/opt/anaconda3/bin/python3"
+# ── Dynamic Path & Environment Resolution ───────────────────────────────────
+SOURCE="${(%):-%N}"
+[ -z "$SOURCE" ] && SOURCE="${BASH_SOURCE[0]:-$0}"
+while [ -h "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+ZENITH_HOME="${ZENITH_DIR:-$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)}"
+
+if [[ -z "$PYTHON" ]]; then
+  if [[ -f "$ZENITH_HOME/.venv/bin/python3" ]]; then
+    PYTHON="$ZENITH_HOME/.venv/bin/python3"
+  elif command -v python3 >/dev/null 2>&1; then
+    PYTHON="$(command -v python3)"
+  elif command -v python >/dev/null 2>&1; then
+    PYTHON="$(command -v python)"
+  else
+    PYTHON="/usr/bin/python3"
+  fi
+fi
 
 # ── Help ────────────────────────────────────────────────────────────────────
 if [[ "$1" == "-h" || "$1" == "--help" ]]; then

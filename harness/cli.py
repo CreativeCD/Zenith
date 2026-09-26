@@ -128,8 +128,10 @@ def main(args_list: list[str] | None = None) -> int:
         print(f"Error loading configuration: {e}", file=sys.stderr)
         return 1
 
-    # Check for interactive REPL mode
-    if getattr(args, "interactive", False):
+    # Check for interactive REPL mode:
+    # If explicitly requested (-i / --interactive) OR run as a standalone command with no args
+    is_bare_invocation = (args_list is None and len(sys.argv) <= 1)
+    if getattr(args, "interactive", False) or is_bare_invocation:
         from harness.interactive import launch_interactive_repl
         return launch_interactive_repl(config=config)
 
