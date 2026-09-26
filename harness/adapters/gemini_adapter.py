@@ -267,12 +267,23 @@ class GeminiAdapter:
                 for msg in history:
                     r = msg.get("role", "user")
                     c_role = "user" if r in ("user", "human") else "model"
-                    contents.append(types.Content(role=c_role, parts=[types.Part(text=msg.get("content", msg.get("text", "")))]))
-                if user_message:
-                    contents.append(types.Content(role="user", parts=[types.Part(text=user_message)]))
+                    txt = str(msg.get("content", msg.get("text", "")))
+                    if not txt.strip():
+                        continue
+                    if contents and contents[-1].role == c_role:
+                        contents[-1].parts.append(types.Part(text=txt))
+                    else:
+                        contents.append(types.Content(role=c_role, parts=[types.Part(text=txt)]))
+                if user_message and user_message.strip():
+                    if contents and contents[-1].role == "user":
+                        contents[-1].parts.append(types.Part(text=user_message))
+                    else:
+                        contents.append(types.Content(role="user", parts=[types.Part(text=user_message)]))
+                if not contents:
+                    contents = [types.Content(role="user", parts=[types.Part(text=user_message or "Hello")])]
             else:
                 contents = [
-                    types.Content(role="user", parts=[types.Part(text=user_message)])
+                    types.Content(role="user", parts=[types.Part(text=user_message or "Hello")])
                 ]
 
             # Try each key in pool for this model

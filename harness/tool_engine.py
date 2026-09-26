@@ -27,6 +27,7 @@ from harness.contracts import (
     ToolResult,
 )
 from harness.skill_retriever import SkillRetriever
+from harness.skills.manager import SkillManager
 from harness.telemetry import TelemetryWriter
 from harness.tools.ast_tools import (
     find_references,
@@ -159,6 +160,12 @@ class FetchExternalSkillArgs(BaseModel):
     max_tokens: int = Field(default=400, description="Maximum tokens to return.")
 
 
+class GetSkillArgs(BaseModel):
+    """Retrieve full instructions and documentation for an installed custom skill by name."""
+    reasoning: str = Field(description="Reasoning for loading this specific skill.")
+    skill_name: str = Field(description="Name of the installed skill to read instructions for.")
+
+
 class EmitDoneCandidateArgs(BaseModel):
     """Signal that the issue fix is complete, tested, and ready for multi-stage verification."""
     reasoning: str = Field(description="Detailed reasoning explaining why the issue is fully solved.")
@@ -184,6 +191,7 @@ TOOL_SCHEMAS: Dict[str, Type[BaseModel]] = {
     "git_diff": GitDiffArgs,
     "git_rollback": GitRollbackArgs,
     "fetch_external_skill": FetchExternalSkillArgs,
+    "get_skill": GetSkillArgs,
     "emit_done_candidate": EmitDoneCandidateArgs,
 }
 
@@ -199,6 +207,7 @@ class ToolEngine:
         deduplicator: Optional[ToolCallDeduplicator] = None,
         telemetry: Optional[TelemetryWriter] = None,
         skill_retriever: Optional[SkillRetriever] = None,
+        skill_manager: Optional[SkillManager] = None,
     ):
         self.repo_root = str(Path(repo_root).resolve())
         self.deduplicator = deduplicator or ToolCallDeduplicator(capacity=10)
@@ -207,6 +216,7 @@ class ToolEngine:
             telemetry=self.telemetry,
             cache_dir=str(Path(self.repo_root) / ".harness" / "skill_cache"),
         )
+        self.skill_manager = skill_manager or SkillManager(repo_root=self.repo_root)
 
     def get_tool_definitions(self) -> List[Dict[str, Any]]:
         """Return function calling declarations compatible with Gemini, OpenAI, and Claude."""
@@ -441,6 +451,26 @@ class ToolEngine:
                 truncated_output=snippet,
                 tokens_in_raw=max(1, len(snippet) // 4),
                 tokens_in_truncated=max(1, len(snippet) // 4),
+            )
+
+        elif tool_name == "get_skill":
+            skill_name = str(args.get("skill_name") or "")
+            skill = self.skill_manager.get_skill(skill_name)
+            if skill:
+                output = f"# Skill: {skill.name}\n\n{skill.instructions}"
+                status = ResultStatus.SUCCESS
+            else:
+                available = list(self.skill_manager.discover_skills().keys())
+                output = f"TOOL_ERROR: Skill '{skill_name}' not found. Available skills: {available}"
+                status = ResultStatus.FAIL
+            return ToolResult(
+                tool="get_skill",
+                args_hash="",
+                status=status,
+                raw_output=output,
+                truncated_output=output,
+                tokens_in_raw=max(1, len(output) // 4),
+                tokens_in_truncated=max(1, len(output) // 4),
             )
 
         elif tool_name == "emit_done_candidate":
