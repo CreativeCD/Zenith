@@ -360,63 +360,17 @@ class RecoveryEngine:
     ) -> bool:
         """Execute git rollback with specified scope ('file', 'all', 'checkpoint')."""
         try:
-            repo_root = Path(repo_path).resolve()
+            from harness.tools.vcs import git_rollback
             if scope == "file" and target:
-                target_path = (repo_root / target).resolve()
-                # Security: prevent path traversal outside repository root
-                if not str(target_path).startswith(str(repo_root)):
+                res = git_rollback(repo_root=repo_path, file_path=target)
+                if res.status != ResultStatus.SUCCESS:
                     return False
-
-                # Check if target is tracked in git
-                ls_proc = subprocess.run(
-                    ["git", "ls-files", "--error-unmatch", "--", target],
-                    cwd=repo_path,
-                    capture_output=True,
-                    check=False,
-                )
-                if ls_proc.returncode == 0:
-                    subprocess.run(
-                        ["git", "checkout", "HEAD", "--", target],
-                        check=True,
-                        cwd=repo_path,
-                        capture_output=True,
-                    )
-                else:
-                    # Untracked file: remove it cleanly
-                    if target_path.is_file():
-                        target_path.unlink()
-                    elif target_path.is_dir():
-                        shutil.rmtree(target_path)
-
-            elif scope == "all":
-                subprocess.run(
-                    ["git", "checkout", "HEAD", "--", "."],
-                    check=True,
-                    cwd=repo_path,
-                    capture_output=True,
-                )
-                subprocess.run(
-                    ["git", "clean", "-fd", "-e", ".harness", "-e", ".venv"],
-                    check=True,
-                    cwd=repo_path,
-                    capture_output=True,
-                )
-            elif scope == "checkpoint":
-                # Rollback uncommitted changes to clean working tree
-                subprocess.run(
-                    ["git", "checkout", "HEAD", "--", "."],
-                    check=True,
-                    cwd=repo_path,
-                    capture_output=True,
-                )
-                subprocess.run(
-                    ["git", "clean", "-fd", "-e", ".harness", "-e", ".venv"],
-                    check=True,
-                    cwd=repo_path,
-                    capture_output=True,
-                )
+            elif scope in ("all", "checkpoint"):
+                res = git_rollback(repo_root=repo_path)
+                if res.status != ResultStatus.SUCCESS:
+                    return False
                 # If target checkpoint id is specified, try restoring that diff
-                if target:
+                if scope == "checkpoint" and target:
                     try:
                         cid = int(target)
                         diff_text = self.checkpoints.get(cid)
