@@ -107,6 +107,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Launch interactive Claude Code style terminal REPL",
     )
 
+    parser.add_argument(
+        "--trust",
+        "-y",
+        "--yes",
+        action="store_true",
+        help="Grant workspace trust to the target repository without interactive prompt",
+    )
+
     return parser
 
 
@@ -123,7 +131,6 @@ def main(args_list: list[str] | None = None) -> int:
             config_path=args.config,
             cli_args=cli_overrides,
         )
-        config.validate()
     except (OSError, ValueError, KeyError, TypeError) as e:
         print(f"Error loading configuration: {e}", file=sys.stderr)
         return 1
@@ -131,7 +138,31 @@ def main(args_list: list[str] | None = None) -> int:
     # Check for interactive REPL mode:
     # If explicitly requested (-i / --interactive) OR run as a standalone command with no args
     is_bare_invocation = (args_list is None and len(sys.argv) <= 1)
-    if getattr(args, "interactive", False) or is_bare_invocation:
+    is_interactive = getattr(args, "interactive", False) or is_bare_invocation
+
+    # Workspace Trust & Boundary Verification
+    from harness.trust import WorkspaceTrustManager
+    trust_mgr = WorkspaceTrustManager()
+    resolved_repo = str(Path(config.repo_path).resolve())
+
+    auto_trust = (
+        getattr(args, "trust", False)
+        or getattr(args, "yes", False)
+        or getattr(args, "dry_run", False)
+        or config.trust
+    )
+    if not trust_mgr.request_trust(resolved_repo, auto_trust=auto_trust):
+        return 1
+
+    # In batch mode, validate credentials and environment immediately
+    if not is_interactive:
+        try:
+            config.validate()
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            print(f"Error loading configuration: {e}", file=sys.stderr)
+            return 1
+
+    if is_interactive:
         from harness.interactive import launch_interactive_repl
         return launch_interactive_repl(config=config)
 

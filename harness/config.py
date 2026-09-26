@@ -15,6 +15,11 @@ import yaml
 from dotenv import load_dotenv
 
 # Load .env file at startup if present
+# 1. Global ~/.zenith/.env (persists user API keys across all repos)
+global_env = Path.home() / ".zenith" / ".env"
+if global_env.exists():
+    load_dotenv(global_env)
+# 2. Local working directory .env
 load_dotenv()
 
 
@@ -132,6 +137,7 @@ class HarnessConfig:
     repo_path: str = "."
     issue_path: str = "issue.txt"
     dry_run: bool = False
+    trust: bool = False
     model: ModelConfig = field(default_factory=ModelConfig)
     context: ContextConfig = field(default_factory=ContextConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
@@ -220,6 +226,8 @@ def load_config(
     if cli_args:
         if cli_args.get("repo"):
             cfg.repo_path = cli_args["repo"]
+        if cli_args.get("trust") or cli_args.get("yes"):
+            cfg.trust = True
         if cli_args.get("issue"):
             cfg.issue_path = cli_args["issue"]
         if cli_args.get("model"):
@@ -244,6 +252,12 @@ def load_config(
             cfg.external_skills.enabled = False
         if cli_args.get("output_dir"):
             cfg.telemetry.output_dir = cli_args["output_dir"]
+
+    # Load target repo's .env if present and distinct
+    if cfg.repo_path:
+        repo_env = Path(cfg.repo_path) / ".env"
+        if repo_env.exists():
+            load_dotenv(repo_env)
 
     # Load API Keys from environment if present
     from harness.adapters.key_pool import KeyPoolManager

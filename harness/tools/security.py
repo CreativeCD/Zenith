@@ -49,7 +49,11 @@ def validate_path(file_path: str, repo_root: str) -> Path:
         raise ValueError(f"Path traversal detected in path: '{file_path}'")
 
     root = Path(repo_root).resolve()
-    target = (root / clean_path).resolve()
+    target = Path(clean_path)
+    if not target.is_absolute():
+        target = (root / target).resolve()
+    else:
+        target = target.resolve()
 
     try:
         # Check if target is relative to root

@@ -47,11 +47,12 @@ SYSTEM_REPL_PROMPT = """You are Zenith, an expert autonomous AI software enginee
 You are operating directly inside the repository at: {repo_path}
 
 Repository Guidelines:
-1. Always inspect files and run tests in the current repository ({repo_path}) using your tools (search_code, list_dir, read_file_range, run_test_suite).
+1. Always inspect files and run tests strictly in the current repository ({repo_path}) using your tools (search_code, list_dir, read_file_range, run_test_suite).
 2. NEVER assume files, issues, or bugs from other projects. Only refer to files and test results that genuinely exist in this repository.
-3. If the user mentions an issue or issue file (e.g. in `issues/`), read that file to understand the problem.
-4. When asked to find bugs or fix tests, run the test suite to observe real failures in this repository, locate the root cause, and apply minimal, clean fixes.
-5. Be concise, transparent, and direct. Explain actions before or after using tools.
+3. Strict Boundary Security: You are strictly jailed to {repo_path}. All file creations, edits, reads, deletions, and commands MUST stay within this directory. Never access parent folders or other repositories.
+4. If the user mentions an issue or issue file, read that file in this repository to understand the problem.
+5. When asked to find bugs or fix tests, run the test suite to observe real failures in this repository, locate the root cause, and apply minimal, clean fixes.
+6. Be concise, transparent, and direct. Explain actions before or after using tools.
 """
 
 
@@ -95,9 +96,10 @@ class ZenithREPL:
 
         banner_text = (
             f"[bold cyan]⚡ ZENITH CODE[/bold cyan] [dim]— Autonomous AI Engineer (Claude Code style)[/dim]\n"
-            f"[bold]Repo[/bold]    : [green]{repo_name}[/green] [dim]({self.repo_path})[/dim]\n"
-            f"[bold]Model[/bold]   : [cyan]{model_name}[/cyan] [dim](Key Pool: {key_count} active keys)[/dim]\n"
-            f"[bold]Help[/bold]    : Type [bold cyan]/help[/bold cyan] for commands, [bold cyan]/debug[/bold cyan] to auto-detect & fix bugs, [bold red]exit[/bold red] to quit."
+            f"[bold]Repo[/bold]     : [green]{repo_name}[/green] [dim]({self.repo_path})[/dim]\n"
+            f"[bold]Trust[/bold]    : [bold green]🔒 Verified & Jailed strictly to this folder[/bold green]\n"
+            f"[bold]Model[/bold]    : [cyan]{model_name}[/cyan] [dim](Key Pool: {key_count} active keys)[/dim]\n"
+            f"[bold]Help[/bold]     : Type [bold cyan]/help[/bold cyan] for commands, [bold cyan]/debug[/bold cyan] to auto-detect & fix bugs, [bold red]exit[/bold red] to quit."
         )
         console.print(Panel(banner_text, border_style="cyan", expand=False))
         console.print("")
@@ -270,14 +272,16 @@ class ZenithREPL:
                 console.print("[red]No key provided. Exiting.[/red]")
                 return False
 
-            env_path = Path(self.repo_path) / ".env"
+            zenith_env_dir = Path.home() / ".zenith"
+            zenith_env_dir.mkdir(parents=True, exist_ok=True)
+            env_path = zenith_env_dir / ".env"
             with open(env_path, "a", encoding="utf-8") as f:
                 f.write(f"\nAI_API_KEY={key_input}\n")
             os.environ["AI_API_KEY"] = key_input
 
             from harness.adapters.key_pool import KeyPoolManager
             self.adapter.key_pool = KeyPoolManager(keys=[key_input])
-            console.print("[bold green]✅ API key saved and activated! You're ready to code.[/bold green]\n")
+            console.print("[bold green]✅ API key saved globally to ~/.zenith/.env! You're ready to code.[/bold green]\n")
             return True
         except (KeyboardInterrupt, EOFError):
             console.print("\n[dim]Cancelled.[/dim]")
@@ -285,6 +289,12 @@ class ZenithREPL:
 
     async def start(self) -> None:
         """Main REPL loop."""
+        from harness.trust import WorkspaceTrustManager
+        trust_mgr = WorkspaceTrustManager()
+        auto_trust = getattr(self.config, "trust", False)
+        if not trust_mgr.request_trust(self.repo_path, auto_trust=auto_trust):
+            return
+
         self.print_welcome_banner()
 
         if not self._ensure_api_key():
