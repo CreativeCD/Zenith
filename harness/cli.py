@@ -9,9 +9,9 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import List, Optional
 
 from harness.config import HarnessConfig, load_config
+from harness.context_manager import ContextManager
 from harness.telemetry import TelemetryWriter
 
 
@@ -97,7 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(args_list: Optional[List[str]] = None) -> int:
+def main(args_list: list[str] | None = None) -> int:
     """Main CLI entrypoint."""
     parser = build_parser()
     args = parser.parse_args(args_list)
@@ -111,7 +111,7 @@ def main(args_list: Optional[List[str]] = None) -> int:
             cli_args=cli_overrides,
         )
         config.validate()
-    except Exception as e:
+    except (ValueError, FileNotFoundError, KeyError, TypeError) as e:
         print(f"Error loading configuration: {e}", file=sys.stderr)
         return 1
 
@@ -120,6 +120,12 @@ def main(args_list: Optional[List[str]] = None) -> int:
         output_dir=config.telemetry.output_dir,
         model_name=config.model.name,
         stream_to_stdout=config.telemetry.stream_to_stdout,
+    )
+
+    # Initialize Layer 4: Context & Memory Manager
+    context_mgr = ContextManager(
+        config=config.context,
+        output_dir=config.telemetry.output_dir,
     )
 
     telemetry.log_session_start(
@@ -134,16 +140,16 @@ def main(args_list: Optional[List[str]] = None) -> int:
         print(f"  Issue Path  : {config.issue_path}")
         print(f"  Model       : {config.model.name}")
         print(f"  Agent Mode  : {config.agent.agent_mode} (Max Steps: {config.agent.max_steps})")
-        print(f"  Token Budget: {config.context.max_context_tokens:,} tokens")
+        print(f"  Token Budget: {config.context.max_context_tokens:,} tokens (KV Cache: {config.context.kv_cache_enabled})")
         print(f"  Dry Run     : {config.dry_run}")
         print("=" * 65 + "\n")
 
     if config.dry_run:
-        print("Dry run complete: configuration loaded, validated, and telemetry initialized.")
+        prompt_sections = context_mgr.build_prompt()
+        print(f"Dry run complete: configuration loaded, validated, telemetry initialized, and context manager ready ({prompt_sections.total_tokens} base tokens).")
         return 0
 
-    # In Phase 0, print ready status
-    print("Zenith harness initialized. Ready for Phase 1 Core Tool Engine.")
+    print("Zenith harness initialized. Context Manager (Phase 2) active.")
     return 0
 
 

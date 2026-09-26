@@ -195,12 +195,12 @@ zenith/
 | 2.10 | Wire ContextManager into orchestrator loop — all prompts built via ContextManager | §3.3 | E2E: prompt token count logged in telemetry every turn |
 
 ### P2 Exit Criteria
-- [ ] `TokenBudgetManager` enforces ALL section limits in unit tests
-- [ ] Prompt token count ≤ `max_context_tokens` in every turn of E2E runs
-- [ ] KV cache test: sections 1+2 byte-identical across 5 turns
-- [ ] Rolling Summarizer triggers at exactly 70% threshold
-- [ ] All 5 observation size classes truncated correctly
-- [ ] `context_summary.md` written after each compression event
+- [x] `TokenBudgetManager` enforces ALL section limits in unit tests
+- [x] Prompt token count ≤ `max_context_tokens` in every turn of E2E runs
+- [x] KV cache test: sections 1+2 byte-identical across 5 turns
+- [x] Rolling Summarizer triggers at exactly 70% threshold
+- [x] All 5 observation size classes truncated correctly
+- [x] `context_summary.md` written after each compression event
 
 ---
 

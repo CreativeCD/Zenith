@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from harness.adapters.base import ModelResponse
 
@@ -18,9 +18,9 @@ class GeminiAdapter:
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
         model_name: str = "gemini-2.5-flash",
-        base_url: Optional[str] = None,
+        base_url: str | None = None,
     ):
         self.api_key = api_key or os.environ.get("AI_API_KEY")
         self.model_name = model_name
@@ -30,7 +30,7 @@ class GeminiAdapter:
     def _ensure_client(self) -> None:
         """Lazily initialize Google GenAI client."""
         if not self.api_key:
-            raise EnvironmentError(
+            raise OSError(
                 "AI_API_KEY not configured. Provide it in .env or pass api_key to GeminiAdapter."
             )
         # Client initialization will be active when SDK is invoked
@@ -39,11 +39,11 @@ class GeminiAdapter:
         self,
         system_prompt: str,
         user_message: str,
-        tools: Optional[List[Dict[str, Any]]] = None,
+        tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.0,
         max_output_tokens: int = 4096,
         use_structured_output: bool = True,
-        seed: Optional[int] = 42,
+        seed: int | None = 42,
     ) -> ModelResponse:
         """Execute chat completion with Gemini."""
         self._ensure_client()

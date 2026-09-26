@@ -9,7 +9,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
+
 import yaml
 from dotenv import load_dotenv
 
@@ -20,8 +21,8 @@ load_dotenv()
 @dataclass
 class ModelConfig:
     name: str = "gemini-2.5-flash"
-    plan_model: Optional[str] = None
-    base_url: Optional[str] = None
+    plan_model: str | None = None
+    base_url: str | None = None
     temperature_plan: float = 0.1
     temperature_act: float = 0.0
     temperature_reflect: float = 0.05
@@ -30,7 +31,7 @@ class ModelConfig:
     max_output_tokens: int = 4096
     enable_thinking: bool = False
     use_structured_output: bool = True
-    api_key: Optional[str] = None
+    api_key: str | None = None
 
 
 @dataclass
@@ -83,7 +84,7 @@ class ExternalSkillsConfig:
     prefetch_at_startup: bool = True
     swebench_index_path: str = ".harness/swebench_index"
     github_api_token_env: str = "GITHUB_TOKEN"
-    github_token: Optional[str] = None
+    github_token: str | None = None
 
 
 @dataclass
@@ -136,7 +137,7 @@ class HarnessConfig:
         if not self.dry_run and not self.model.api_key:
             api_key = os.environ.get("AI_API_KEY")
             if not api_key:
-                raise EnvironmentError(
+                raise OSError(
                     "AI_API_KEY environment variable is not set. "
                     "Define AI_API_KEY in your environment or .env file."
                 )
@@ -152,8 +153,8 @@ class HarnessConfig:
 
 
 def load_config(
-    config_path: Optional[str] = None,
-    cli_args: Optional[Dict[str, Any]] = None
+    config_path: str | None = None,
+    cli_args: dict[str, Any] | None = None
 ) -> HarnessConfig:
     """Load config from YAML file, apply defaults, and override with CLI args."""
     cfg = HarnessConfig()

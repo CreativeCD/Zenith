@@ -10,8 +10,7 @@ import json
 from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
-
+from typing import Any
 
 # ─── Enums ─────────────────────────────────────────────────────────────
 
@@ -139,10 +138,10 @@ def _serialize_value(val: Any) -> Any:
 
 @dataclass
 class ContractBase:
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return _serialize_value(self)
 
-    def to_json(self, indent: Optional[int] = None) -> str:
+    def to_json(self, indent: int | None = None) -> str:
         return json.dumps(self.to_dict(), indent=indent)
 
 
@@ -153,7 +152,7 @@ class SuspectedFile(ContractBase):
     path: str
     confidence: float               # 0.0 – 1.0
     reason: str
-    suspected_symbol: Optional[str] = None
+    suspected_symbol: str | None = None
 
 
 @dataclass
@@ -161,11 +160,11 @@ class IssuePlan(ContractBase):
     issue_id: str
     primary_goal: str
     task_type: TaskType
-    acceptance_criteria: List[str]
-    suspected_files: List[SuspectedFile]
+    acceptance_criteria: list[str]
+    suspected_files: list[SuspectedFile]
     reproduction_hint: str
     test_filter: str
-    error_type: Optional[str]
+    error_type: str | None
     complexity_estimate: Complexity
     estimated_steps: int
     requires_external_knowledge: bool
@@ -188,7 +187,7 @@ class RankedFile(ContractBase):
 
 @dataclass
 class RankedFileSet(ContractBase):
-    files: List[RankedFile]         # Sorted by relevance_score desc
+    files: list[RankedFile]         # Sorted by relevance_score desc
     total_indexed: int
     index_tokens_cost: int
 
@@ -210,7 +209,7 @@ class RepoIndex(ContractBase):
 class ToolCall(ContractBase):
     tool: str
     reasoning: str
-    args: Dict[str, Any]
+    args: dict[str, Any]
     fingerprint: str = ""           # SHA256(tool + canonical(args))
 
 
@@ -221,8 +220,8 @@ class ToolResult(ContractBase):
     status: ResultStatus
     raw_output: str
     truncated_output: str
-    exit_code: Optional[int] = None
-    error_code: Optional[ErrorCode] = None
+    exit_code: int | None = None
+    error_code: ErrorCode | None = None
     tokens_in_raw: int = 0
     tokens_in_truncated: int = 0
     execution_time_ms: int = 0
@@ -244,11 +243,11 @@ class PromptSections(ContractBase):
 @dataclass
 class WorkingMemory(ContractBase):
     goal: str
-    files_examined: Dict[str, str] = field(default_factory=dict)  # {path: finding}
-    edits_applied: List[str] = field(default_factory=list)
+    files_examined: dict[str, str] = field(default_factory=dict)  # {path: finding}
+    edits_applied: list[str] = field(default_factory=list)
     test_status: str = "PENDING"
     current_strategy: str = ""
-    lessons_learned: List[str] = field(default_factory=list)
+    lessons_learned: list[str] = field(default_factory=list)
 
 
 # ─── L5: Orchestrator Contracts ────────────────────────────────────────
@@ -263,17 +262,17 @@ class PlanStep(ContractBase):
 
 @dataclass
 class AgentPlan(ContractBase):
-    steps: List[PlanStep]
+    steps: list[PlanStep]
     estimated_total_steps: int
-    risk_factors: List[str]
-    rollback_checkpoints: List[int]
+    risk_factors: list[str]
+    rollback_checkpoints: list[int]
 
 
 @dataclass
 class DoneCandidate(ContractBase):
     confidence: float
-    evidence: List[str]
-    files_modified: List[str]
+    evidence: list[str]
+    files_modified: list[str]
 
 
 # ─── L7: Verification Gate Contracts ───────────────────────────────────
@@ -291,9 +290,9 @@ class VerificationResult(ContractBase):
     verification_id: str
     run_at: datetime
     status: ResultStatus            # SUCCESS or FAIL
-    phases: Dict[str, PhaseResult] = field(default_factory=dict)
-    first_failure: Optional[VerificationPhase] = None
-    recovery_action: Optional[str] = None
+    phases: dict[str, PhaseResult] = field(default_factory=dict)
+    first_failure: VerificationPhase | None = None
+    recovery_action: str | None = None
     diff_summary: str = ""
     total_duration_ms: int = 0
 
@@ -322,9 +321,9 @@ class TelemetryEvent(ContractBase):
     phase: AgentPhase = AgentPhase.INIT
     agent: str = "orchestrator"
     event_type: EventType = EventType.INIT
-    tool: Optional[str] = None
-    tool_args_hash: Optional[str] = None
-    reasoning: Optional[str] = None
+    tool: str | None = None
+    tool_args_hash: str | None = None
+    reasoning: str | None = None
     tokens_in: int = 0
     tokens_out: int = 0
     tokens_cumulative: int = 0
@@ -332,7 +331,7 @@ class TelemetryEvent(ContractBase):
     cost_cumulative_usd: float = 0.0
     latency_ms: int = 0
     result_status: ResultStatus = ResultStatus.SUCCESS
-    error_code: Optional[ErrorCode] = None
+    error_code: ErrorCode | None = None
     recovery_triggered: bool = False
     loop_count: int = 0
     revision_count: int = 0
@@ -349,4 +348,4 @@ class SessionResult(ContractBase):
     total_tokens: int
     total_cost_usd: float
     total_wall_time_ms: int
-    verification_result: Optional[VerificationResult] = None
+    verification_result: VerificationResult | None = None
