@@ -100,6 +100,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="harness_config.yaml",
         help="Path to harness YAML configuration file",
     )
+    parser.add_argument(
+        "-i",
+        "--interactive",
+        action="store_true",
+        help="Launch interactive Claude Code style terminal REPL",
+    )
 
     return parser
 
@@ -121,6 +127,11 @@ def main(args_list: list[str] | None = None) -> int:
     except (OSError, ValueError, KeyError, TypeError) as e:
         print(f"Error loading configuration: {e}", file=sys.stderr)
         return 1
+
+    # Check for interactive REPL mode
+    if getattr(args, "interactive", False):
+        from harness.interactive import launch_interactive_repl
+        return launch_interactive_repl(config=config)
 
     # Initialize Telemetry
     telemetry = TelemetryWriter(
