@@ -216,6 +216,7 @@ class GeminiAdapter:
                     types.Tool(function_declarations=[types.FunctionDeclaration(**t)])
                     for t in tools
                 ]
+                config_kwargs["automatic_function_calling"] = types.AutomaticFunctionCallingConfig(disable=True)
 
             generate_config = types.GenerateContentConfig(**config_kwargs)
             contents = [
@@ -231,10 +232,13 @@ class GeminiAdapter:
                 client = self._get_client(active_key)
 
                 try:
-                    response = await client.aio.models.generate_content(
-                        model=current_model,
-                        contents=contents,
-                        config=generate_config,
+                    response = await asyncio.wait_for(
+                        client.aio.models.generate_content(
+                            model=current_model,
+                            contents=contents,
+                            config=generate_config,
+                        ),
+                        timeout=30.0,
                     )
                     latency_ms = int((time.perf_counter() - start_time) * 1000)
 
@@ -332,6 +336,18 @@ class GeminiAdapter:
                         cost_usd=cost_usd,
                     )
 
+                except (asyncio.TimeoutError, TimeoutError):
+                    logger.warning("Request timed out on %s (key #%d). Trying next key...", current_model, active_idx + 1)
+                    key_pool.mark_rate_limited(active_key, retry_delay=10.0)
+                    print(f"  ⏱️ Request timed out on key #{active_idx + 1}. Switching to next key...", flush=True)
+                    if attempt < total_keys - 1:
+                        continue
+                    if model_idx < len(models_to_try) - 1:
+                        next_model = models_to_try[model_idx + 1]
+                        print(f"  ⚡ Cascading to fallback model '{next_model}'...", flush=True)
+                        break
+                    continue
+
                 except Exception as exc:
                     last_exc = exc
                     exc_str = str(exc)
@@ -368,9 +384,9 @@ class GeminiAdapter:
                         else:
                             # Last model and all keys exhausted: check if shortest cooldown is brief
                             wait_rem = key_pool.shortest_cooldown_remaining()
-                            if wait_rem > 0 and wait_rem <= 25.0:
+                            if wait_rem > 0 and wait_rem <= 65.0:
                                 print(
-                                    f"  ⏳ All models and keys throttled. Waiting {wait_rem:.1f}s for key cooldown...",
+                                    f"  ⏳ All keys cooling down. Waiting {wait_rem:.1f}s for key cooldown...",
                                     flush=True,
                                 )
                                 await asyncio.sleep(wait_rem + 0.5)

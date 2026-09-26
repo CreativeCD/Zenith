@@ -3,10 +3,10 @@
 # All values overridable by CLI flags or environment variables.
 
 model:
-  name: "gemini-3.6-flash"             # Primary model: best reasoning + throughput
-  fallback_chain:                       # Auto-cascade fallback on rate limit / quota exhaustion
+  name: "gemini-3.5-flash-lite"        # Primary model: free-tier high quota + fast throughput
+  fallback_chain:                      # Auto-cascade fallback on rate limit / quota exhaustion
     - "gemini-3.5-flash"
-    - "gemini-3.5-flash-lite"
+    - "gemini-3.6-flash"
   plan_model: null                      # If set, use a different model for PLAN phase
   base_url: null                        # null = default SDK endpoint
   temperature_plan: 0.1
