@@ -4,7 +4,7 @@
 ```
 Project   : Zenith — SOTA Autonomous Coding-Agent Harness
 Event     : LCC × DevClub AI Coding Harness Hackathon 2026
-Reference : PRD.md (v4.0 — Elite Master) | phases.md (v2.0)
+Reference : PRD.md (v4.0 — Elite Master) | architecture.md (v1.0) | phases.md (v2.0)
 Format    : Chronological log — newest entries at TOP of each phase section
 ```
 
@@ -18,7 +18,7 @@ Format    : Chronological log — newest entries at TOP of each phase section
 
 | Phase | Status | Start | End | Tasks Done | Issues | Notes |
 |---|---|---|---|---|---|---|
-| P0: Bootstrap & Infrastructure | ✅ DONE | — | 2026-09-26 13:15 | PRD v4.0, phases.md v2.0, logs.md v2.0 | — | 124-task plan set; code scaffold pending |
+| P0: Bootstrap & Infrastructure | 🔄 IN PROGRESS | — | — | PRD v4.0, architecture.md v1.0, phases.md v2.0 | — | 124-task plan & architecture ready; code scaffold next |
 | P1: Core Tool Engine | 🔲 NOT STARTED | — | — | 0 / 19 | — | +8 tasks: AST nav tools, git_status, path validator |
 | P2: Context & Memory | 🔲 NOT STARTED | — | — | 0 / 10 | — | +1 task: KV cache optimization |
 | P3: Verification & Recovery | 🔲 NOT STARTED | — | — | 0 / 21 | — | +5 tasks: LINT_REGRESSION, SIDE_EFFECT, 3-level CB |
@@ -48,6 +48,18 @@ Record after each E2E run:
 ### Log Entries
 
 ```
+[13:25] [ANTIGRAVITY] [DONE] architecture.md created (v1.0 — Comprehensive System Architecture).
+        COMPONENTS DETAILED:
+        - §1–§3: Tenets, Context Diagram, C4 Architecture (Level 1 Context, Level 2 Containers, Level 3 Components)
+        - §4–§5: Strict Layered Module Dependency DAG & Composition Root DI, Data Flow Architecture (Startup, Turn, Recovery)
+        - §6: Formal State Machine (11 states, 18 deterministic transitions, error-recovery loops, invariants)
+        - §7–§8: Layer-by-Layer Technical Design (Layers 1 to 9) and Inter-Component Data Contracts (contracts.py schemas)
+        - §9–§11: Tool Engine Internals (Deduplicator, AST parser, Sandboxing), Multi-Agent Context Isolation (Planner/Navigator/Coder/Verifier), Context Memory Model (5-tier sliding window, compression)
+        - §12–§14: Verification Pipeline (6 deterministic gates), Recovery Engine (10 failure codes, 3-level circuit breaker, fallback chain), Token Economy & KV-cache optimization
+        - §15–§17: Async/Concurrency model, ModelAdapter interface protocol, File System layout & .harness/ artifact spec
+        - §18–§20: Security Blocklists, Observability & Telemetry architecture (18 JSONL events, live dashboard), Failure Mode Analysis (FMEA table)
+        - §21–§22: Tech stack & 15 Architecture Decision Records (ADR-001 through ADR-015)
+
 [13:15] [ANTIGRAVITY] [DONE] PRD.md upgraded to v4.0 Elite Master.
         NEW SECTIONS ADDED:
         - §5 Prompt Engineering Specification (system persona template, anti-patterns,
