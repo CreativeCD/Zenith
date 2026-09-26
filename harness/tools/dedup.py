@@ -54,7 +54,7 @@ class ToolCallDeduplicator:
             )
 
         # 2. Mutating tools are never blocked by deduplication
-        if tool_name in {"apply_patch", "write_file", "git_rollback"}:
+        if tool_name in {"apply_patch", "write_file", "git_rollback", "edit_file"}:
             self.notify_file_modified()
             return None
 

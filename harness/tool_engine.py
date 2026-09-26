@@ -159,6 +159,14 @@ class FetchExternalSkillArgs(BaseModel):
     max_tokens: int = Field(default=400, description="Maximum tokens to return.")
 
 
+class EmitDoneCandidateArgs(BaseModel):
+    """Signal that the issue fix is complete, tested, and ready for multi-stage verification."""
+    reasoning: str = Field(description="Detailed reasoning explaining why the issue is fully solved.")
+    confidence: float = Field(default=1.0, description="Confidence score from 0.0 to 1.0.")
+    evidence: list[str] = Field(description="List of verification evidence, e.g. tests passing, edge cases tested.")
+    files_modified: list[str] = Field(description="List of repository files modified for this fix.")
+
+
 # Registry mapping tool names to schemas and docstrings
 TOOL_SCHEMAS: Dict[str, Type[BaseModel]] = {
     "list_dir": ListDirArgs,
@@ -176,6 +184,7 @@ TOOL_SCHEMAS: Dict[str, Type[BaseModel]] = {
     "git_diff": GitDiffArgs,
     "git_rollback": GitRollbackArgs,
     "fetch_external_skill": FetchExternalSkillArgs,
+    "emit_done_candidate": EmitDoneCandidateArgs,
 }
 
 
@@ -432,6 +441,21 @@ class ToolEngine:
                 truncated_output=snippet,
                 tokens_in_raw=max(1, len(snippet) // 4),
                 tokens_in_truncated=max(1, len(snippet) // 4),
+            )
+
+        elif tool_name == "emit_done_candidate":
+            payload = json.dumps({
+                "status": "DONE_CANDIDATE",
+                "confidence": float(args.get("confidence", 1.0)),
+                "evidence": args.get("evidence", []),
+                "files_modified": args.get("files_modified", []),
+            })
+            return ToolResult(
+                tool="emit_done_candidate",
+                args_hash="",
+                status=ResultStatus.SUCCESS,
+                raw_output=payload,
+                truncated_output="DONE_CANDIDATE recorded",
             )
 
         return ToolResult(

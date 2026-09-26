@@ -19,7 +19,7 @@ from typing import Any
 from harness.adapters.base import ModelAdapter, ModelResponse
 from harness.adapters.gemini_adapter import GeminiAdapter
 from harness.config import HarnessConfig
-from harness.context_manager import ContextManager
+from harness.context_manager import ContextManager, TurnRecord
 from harness.contracts import (
     AgentPhase,
     AgentPlan,
@@ -489,10 +489,20 @@ class Orchestrator:
                 effort = self.config.model.reasoning_effort_reflect
 
             prompt_sections = self.context_manager.build_prompt(ranked_files=self.ranked_files)
+
+            # Assemble dynamic sections body (goal, repo files, working memory, recent turns)
+            sections_body = (
+                f"{prompt_sections.issue_goal}\n\n"
+                f"{prompt_sections.repo_context}\n\n"
+                f"{prompt_sections.working_memory}\n\n"
+                f"{prompt_sections.recent_turns}"
+            )
+            full_user_msg = f"{sections_body}\n\n---\n# § ACTIVE STEP & INSTRUCTION\n{user_msg}"
+
             turn_start = time.perf_counter()
             turn_response = await self._call_model(
                 system_prompt=prompt_sections.persona,
-                user_message=user_msg,
+                user_message=full_user_msg,
                 temperature=self.config.model.temperature_act,
                 tools=tool_definitions,
                 reasoning_effort=effort,
@@ -515,10 +525,26 @@ class Orchestrator:
 
             content = turn_response.content.strip()
 
-            # Check for DONE_CANDIDATE signal
-            if '"status": "DONE_CANDIDATE"' in content or '"status":"DONE_CANDIDATE"' in content:
+            # Check for DONE_CANDIDATE signal in text OR emit_done_candidate tool call
+            is_done_candidate_call = bool(
+                turn_response.tool_calls and turn_response.tool_calls[0].tool == "emit_done_candidate"
+            )
+            is_done_candidate_text = (
+                '"status": "DONE_CANDIDATE"' in content or '"status":"DONE_CANDIDATE"' in content
+            )
+
+            if is_done_candidate_call or is_done_candidate_text:
                 try:
-                    done_candidate = parse_done_candidate(content)
+                    if is_done_candidate_call:
+                        t_args = turn_response.tool_calls[0].args or {}
+                        done_candidate = DoneCandidate(
+                            confidence=float(t_args.get("confidence", 1.0)),
+                            evidence=list(t_args.get("evidence", [])),
+                            files_modified=list(t_args.get("files_modified", [])),
+                        )
+                    else:
+                        done_candidate = parse_done_candidate(content)
+
                     self.current_phase = AgentPhase.DONE_CANDIDATE
                     self.telemetry.log_event(
                         event_type=EventType.DONE_CANDIDATE,
@@ -593,6 +619,10 @@ class Orchestrator:
             elif turn_response.tool_calls:
                 # Execute tool call
                 t_call = turn_response.tool_calls[0]
+                if not t_call.fingerprint:
+                    from harness.recovery import CircuitBreaker
+                    t_call.fingerprint = CircuitBreaker.compute_fingerprint(t_call.tool, t_call.args)
+
                 self.telemetry.log_tool_call(
                     step=self.current_step,
                     tool_name=t_call.tool,
@@ -611,6 +641,39 @@ class Orchestrator:
                     error_code=tool_res.error_code,
                 )
 
+                # Record turn in context manager for sliding window
+                turn_record = TurnRecord(
+                    step=self.current_step,
+                    tool=t_call.tool,
+                    reasoning=t_call.reasoning,
+                    args=t_call.args,
+                    observation=tool_res.truncated_output,
+                    status=tool_res.status,
+                    error_code=tool_res.error_code,
+                    exit_code=tool_res.exit_code,
+                )
+                self.context_manager.add_turn(turn_record)
+
+                # Update working memory based on executed tool
+                if tool_res.status == ResultStatus.SUCCESS:
+                    if t_call.tool in ("read_file_range", "get_symbol"):
+                        target = t_call.args.get("file_path") or t_call.args.get("path")
+                        if target:
+                            self.context_manager.update_working_memory(
+                                file_examined=(str(target), f"inspected in step {self.current_step}")
+                            )
+                    elif t_call.tool in ("apply_patch", "write_file", "edit_file"):
+                        target = t_call.args.get("target_file") or t_call.args.get("path")
+                        if target:
+                            self.context_manager.update_working_memory(
+                                edit_applied=f"{target}: modified in step {self.current_step}"
+                            )
+                        if hasattr(self, "recovery_engine") and hasattr(self.recovery_engine, "circuit_breaker"):
+                            self.recovery_engine.circuit_breaker.reset_buffer()
+                    elif t_call.tool == "run_test_suite":
+                        status_str = "PASS: test suite passing" if tool_res.exit_code == 0 else "FAIL: test suite failing"
+                        self.context_manager.update_working_memory(test_status=status_str)
+
                 if tool_res.error_code == ErrorCode.LOOP_DETECTED:
                     rec_action = self.recovery_engine.classify_error(
                         error_code=ErrorCode.LOOP_DETECTED,
@@ -628,6 +691,12 @@ class Orchestrator:
             else:
                 # Fallback: check if content contains tool call or done candidate in text
                 last_observation = content[:500]
+                turn_record = TurnRecord(
+                    step=self.current_step,
+                    reasoning=content[:500] if content else "Model emitted direct text response",
+                    observation="No tool call emitted",
+                )
+                self.context_manager.add_turn(turn_record)
                 self.current_phase = AgentPhase.REFLECT
 
             self.current_step += 1
