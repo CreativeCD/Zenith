@@ -20,8 +20,10 @@ if [[ "$1" == "-h" || "$1" == "--help" ]]; then
   echo ""
   echo "  Usage:"
   echo "    zicode                          Run on current dir with issue.txt"
+  echo "    zicode \"issue description\"      Run on current dir with inline issue"
   echo "    zicode /path/to/repo            Custom repo, uses ./issue.txt"
   echo "    zicode /path/to/repo issue.txt  Custom repo and issue file"
+  echo "    zicode --report                 Display latest execution report"
   echo "    zicode --dry                    Dry-run (no API calls)"
   echo "    zicode --verbose                Show live token/cost stream"
   echo "    zicode -h                       This help message"
@@ -39,6 +41,14 @@ POSITIONAL=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --report)
+      if [[ -f "$ZENITH_HOME/.harness/report.md" ]]; then
+        cat "$ZENITH_HOME/.harness/report.md"
+      else
+        echo "No report found at $ZENITH_HOME/.harness/report.md"
+      fi
+      exit 0
+      ;;
     --dry)
       EXTRA_FLAGS+=("--dry-run")
       shift
@@ -65,8 +75,13 @@ while [[ $# -gt 0 ]]; do
       ;;
     *)
       if [[ $POSITIONAL -eq 0 ]]; then
-        REPO_PATH="$1"
-        POSITIONAL=1
+        if [[ -d "$1" ]]; then
+          REPO_PATH="$1"
+          POSITIONAL=1
+        else
+          ISSUE_PATH="$1"
+          POSITIONAL=2
+        fi
       elif [[ $POSITIONAL -eq 1 ]]; then
         ISSUE_PATH="$1"
         POSITIONAL=2
