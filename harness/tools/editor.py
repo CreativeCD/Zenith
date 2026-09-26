@@ -131,7 +131,8 @@ def read_file_range(
         for idx, line in enumerate(f, start=1):
             total_lines += 1
             if start_line <= idx <= min(end_line, start_line + 250 - 1):
-                lines.append(f"{idx:4d}: {line.rstrip('\r\n')}")
+                stripped = line.rstrip("\r\n")
+                lines.append(f"{idx:4d}: {stripped}")
 
     if start_line > total_lines:
         latency_ms = int((time.perf_counter() - start_time) * 1000)
