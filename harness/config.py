@@ -236,6 +236,8 @@ def load_config(
             cfg.agent.agent_mode = cli_args["agent_mode"]
         if cli_args.get("verbose"):
             cfg.telemetry.stream_to_stdout = True
+        if cli_args.get("quiet"):
+            cfg.telemetry.stream_to_stdout = False
         if cli_args.get("dry_run"):
             cfg.dry_run = True
         if cli_args.get("no_external_skills"):

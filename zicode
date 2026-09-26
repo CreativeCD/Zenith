@@ -34,14 +34,15 @@ fi
 # ── Parse args ───────────────────────────────────────────────────────────────
 REPO_PATH="."
 ISSUE_PATH="issue.txt"
-EXTRA_FLAGS=()
+EXTRA_FLAGS=("--verbose")
 POSITIONAL=0
 
 for arg in "$@"; do
   case "$arg" in
     --dry)     EXTRA_FLAGS+=("--dry-run") ;;
-    --verbose) EXTRA_FLAGS+=("--verbose") ;;
-    --*)       ;;   # ignore unknown flags
+    --verbose) ;; # already default
+    --quiet)   EXTRA_FLAGS=("${(@)EXTRA_FLAGS:#--verbose}"); EXTRA_FLAGS+=("--quiet") ;;
+    --*)       EXTRA_FLAGS+=("$arg") ;;
     *)
       if [[ $POSITIONAL -eq 0 ]]; then
         REPO_PATH="$arg"; POSITIONAL=1

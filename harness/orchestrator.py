@@ -14,8 +14,9 @@ import os
 import re
 import time
 from pathlib import Path
+from typing import Any
 
-from harness.adapters.base import ModelAdapter
+from harness.adapters.base import ModelAdapter, ModelResponse
 from harness.adapters.gemini_adapter import GeminiAdapter
 from harness.config import HarnessConfig
 from harness.context_manager import ContextManager
@@ -24,6 +25,7 @@ from harness.contracts import (
     AgentPlan,
     Complexity,
     DoneCandidate,
+    ErrorCode,
     EventType,
     PlanStep,
     ResultStatus,
@@ -407,6 +409,10 @@ class Orchestrator:
 
         # ─── 3. PLAN Phase ─────────────────────────────────────────────────
         self.current_phase = AgentPhase.PLAN
+
+        # Build tool definitions ONCE — passed to every model call so Gemini can emit function_calls
+        tool_definitions = self.tool_engine.get_tool_definitions()
+
         plan_prompt = (
             "Emit the initial structured execution plan in JSON format (PRD §4.5.2):\n"
             "{\n"
@@ -483,14 +489,29 @@ class Orchestrator:
                 effort = self.config.model.reasoning_effort_reflect
 
             prompt_sections = self.context_manager.build_prompt(ranked_files=self.ranked_files)
+            turn_start = time.perf_counter()
             turn_response = await self._call_model(
                 system_prompt=prompt_sections.persona,
                 user_message=user_msg,
                 temperature=self.config.model.temperature_act,
+                tools=tool_definitions,
                 reasoning_effort=effort,
             )
+            turn_latency_ms = int((time.perf_counter() - turn_start) * 1000)
             total_tokens += turn_response.tokens_in + turn_response.tokens_out
             total_cost_usd += getattr(turn_response, "cost_usd", 0.0)
+
+            # Log LLM turn to telemetry
+            self.telemetry.log_llm_turn(
+                step=self.current_step,
+                phase=self.current_phase,
+                tokens_in=turn_response.tokens_in,
+                tokens_out=turn_response.tokens_out,
+                latency_ms=turn_latency_ms,
+                context_tokens_used=prompt_sections.total_tokens,
+                budget=self.config.context.max_context_tokens,
+                agent="orchestrator",
+            )
 
             content = turn_response.content.strip()
 
@@ -512,6 +533,17 @@ class Orchestrator:
                         issue_plan=issue_plan,
                         step=self.current_step,
                     )
+
+                    # Log verification phases to telemetry
+                    if hasattr(verification_result, "phases") and isinstance(verification_result.phases, dict):
+                        for phase_name, p in verification_result.phases.items():
+                            self.telemetry.log_verification_phase(
+                                step=self.current_step,
+                                phase=phase_name,
+                                status=getattr(p, "status", ResultStatus.SUCCESS),
+                                detail=getattr(p, "detail", ""),
+                                duration_ms=getattr(p, "duration_ms", 0),
+                            )
 
                     if verification_result.status == ResultStatus.SUCCESS:
                         self.current_step += 1
@@ -579,7 +611,18 @@ class Orchestrator:
                     error_code=tool_res.error_code,
                 )
 
-                last_observation = tool_res.truncated_output
+                if tool_res.error_code == ErrorCode.LOOP_DETECTED:
+                    rec_action = self.recovery_engine.classify_error(
+                        error_code=ErrorCode.LOOP_DETECTED,
+                        context={"tool": t_call.tool, "args": t_call.args, "detail": tool_res.truncated_output},
+                        step=self.current_step,
+                    )
+                    last_observation = (
+                        f"{tool_res.truncated_output}\n\n"
+                        f"[RECOVERY STRATEGY SHIFT]\n{rec_action.injection_prompt}"
+                    )
+                else:
+                    last_observation = tool_res.truncated_output
                 self.current_phase = AgentPhase.REFLECT
 
             else:
@@ -594,9 +637,8 @@ class Orchestrator:
 
         # Always generate report.md unconditionally upon run completion (Task 5.21)
         try:
-            diff_res = self.tool_engine.execute(
-                ToolCall(tool="git_diff", reasoning="Report diff", args={})
-            )
+            from harness.tools.vcs import git_diff
+            diff_res = git_diff(repo_root=self.config.repo_path)
             final_diff_str = diff_res.raw_output if diff_res else ""
         except Exception:
             final_diff_str = ""

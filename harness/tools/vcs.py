@@ -326,21 +326,70 @@ def git_rollback(
     else:
         # Revert all modified files
         try:
-            proc1 = subprocess.run(
-                ["git", "checkout", "HEAD", "--", "."],
-                cwd=str(resolved_root),
-                capture_output=True,
-                text=True,
-                timeout=20,
-            )
-            # Clean all untracked files & directories, preserving harness metadata
-            proc2 = subprocess.run(
-                ["git", "clean", "-fd", "-e", ".harness"],
-                cwd=str(resolved_root),
-                capture_output=True,
-                text=True,
-                timeout=20,
-            )
+            from pathlib import Path
+            harness_root = Path(__file__).resolve().parents[2]
+            is_self_repo = (resolved_root.resolve() == harness_root.resolve())
+
+            if is_self_repo:
+                # Find porcelain status and only checkout non-harness files
+                status_proc = subprocess.run(
+                    ["git", "status", "--porcelain"],
+                    cwd=str(resolved_root),
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                protected_prefixes = (
+                    "harness/", "tests/", "zicode", "harness_config.yaml",
+                    "PRD.md", "architecture.md", "phases.md", "logs.md",
+                    "Makefile", "README.md", "requirements.txt", ".env", ".gitignore",
+                )
+                checkout_files = []
+                for line in status_proc.stdout.splitlines():
+                    path = line[3:].strip()
+                    if not any(path == p or path.startswith(p) for p in protected_prefixes):
+                        checkout_files.append(path)
+
+                if checkout_files:
+                    proc1 = subprocess.run(
+                        ["git", "checkout", "HEAD", "--"] + checkout_files,
+                        cwd=str(resolved_root),
+                        capture_output=True,
+                        text=True,
+                        timeout=20,
+                    )
+                else:
+                    proc1 = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+                # Clean only unprotected paths
+                clean_cmd = [
+                    "git", "clean", "-fd",
+                    "-e", ".harness", "-e", "harness", "-e", "tests", "-e", "zicode",
+                    "-e", "harness_config.yaml", "-e", "PRD.md", "-e", "architecture.md",
+                ]
+                proc2 = subprocess.run(
+                    clean_cmd,
+                    cwd=str(resolved_root),
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                )
+            else:
+                proc1 = subprocess.run(
+                    ["git", "checkout", "HEAD", "--", "."],
+                    cwd=str(resolved_root),
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                )
+                # Clean all untracked files & directories, preserving harness metadata
+                proc2 = subprocess.run(
+                    ["git", "clean", "-fd", "-e", ".harness"],
+                    cwd=str(resolved_root),
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                )
         except subprocess.TimeoutExpired:
             latency_ms = int((time.perf_counter() - start_time) * 1000)
             return ToolResult(
