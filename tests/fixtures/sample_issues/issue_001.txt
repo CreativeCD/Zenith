@@ -1,0 +1,17 @@
+Issue #101: ZeroDivisionError in Calculator.divide
+
+When calling Calculator.divide(a, 0), the method raises an unhandled ZeroDivisionError instead of returning None or a descriptive ValueError.
+
+Steps to reproduce:
+```python
+from calculator import divide
+divide(10, 0)
+```
+
+Expected behavior:
+divide(a, 0) should return None or raise ValueError("Division by zero is undefined").
+
+Traceback:
+File "calculator.py", line 12, in divide
+  return a / b
+ZeroDivisionError: division by zero

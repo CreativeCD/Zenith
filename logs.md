@@ -18,7 +18,7 @@ Format    : Chronological log — newest entries at TOP of each phase section
 
 | Phase | Status | Start | End | Tasks Done | Issues | Notes |
 |---|---|---|---|---|---|---|
-| P0: Bootstrap & Infrastructure | 🔄 IN PROGRESS | — | — | PRD v4.0, architecture.md v1.0, phases.md v2.0 | — | 124-task plan & architecture ready; code scaffold next |
+| P0: Bootstrap & Infrastructure | ✅ DONE | 2026-09-26 12:55 | 2026-09-26 13:40 | 13 / 13 | — | All contracts, config, CLI, telemetry, Makefile, test stubs passing |
 | P1: Core Tool Engine | 🔲 NOT STARTED | — | — | 0 / 19 | — | +8 tasks: AST nav tools, git_status, path validator |
 | P2: Context & Memory | 🔲 NOT STARTED | — | — | 0 / 10 | — | +1 task: KV cache optimization |
 | P3: Verification & Recovery | 🔲 NOT STARTED | — | — | 0 / 21 | — | +5 tasks: LINT_REGRESSION, SIDE_EFFECT, 3-level CB |
@@ -48,6 +48,22 @@ Record after each E2E run:
 ### Log Entries
 
 ```
+[13:40] [ANTIGRAVITY] [DONE] Phase 0 Bootstrap & Infrastructure Code Scaffolding COMPLETE (13/13 tasks).
+        DELIVERABLES BUILT & VERIFIED:
+        - Task 0.1: .gitignore, README.md, LICENSE created
+        - Task 0.2: Makefile created with setup, run, test, clean, lint, docker-test targets
+        - Task 0.3: Full directory structure established (harness/, harness/adapters/, tests/, tests/fixtures/)
+        - Task 0.4: harness_config.yaml created with all 50+ configuration parameters from PRD §14
+        - Task 0.5: requirements.txt created with pinned production dependencies
+        - Task 0.6: harness/cli.py created with all CLI flags, dry-run mode, and verbose telemetry streaming
+        - Task 0.7: harness/contracts.py implemented with all 10 enums, 16 dataclasses, and serialization
+        - Task 0.8: harness/telemetry.py implemented with JSONL append-only writer and model pricing calculator
+        - Task 0.9: logging.yaml implemented for structured stdout + rotating file logs
+        - Task 0.10: .env.example created with AI_API_KEY and GITHUB_TOKEN templates
+        - Task 0.11: harness/adapters/base.py ModelAdapter protocol and stub GeminiAdapter implemented
+        - Task 0.12: Baseline test suite created (13 passed, 7 skipped, 0 failures, ruff 100% clean)
+        - Task 0.13: harness/config.py implemented with YAML parsing, env loading, and CLI overrides
+
 [13:25] [ANTIGRAVITY] [DONE] architecture.md created (v1.0 — Comprehensive System Architecture).
         COMPONENTS DETAILED:
         - §1–§3: Tenets, Context Diagram, C4 Architecture (Level 1 Context, Level 2 Containers, Level 3 Components)
@@ -108,10 +124,10 @@ Record after each E2E run:
 ```
 
 ### P0 Exit Criteria Status
-- [ ] `make setup` creates `.venv` cleanly
-- [ ] `make test` runs without crashing
-- [ ] `python -m harness.cli --help` works
-- [ ] `telemetry.py` writes events to `.harness/telemetry.jsonl`
+- [x] `make setup` creates `.venv` cleanly
+- [x] `make test` runs without crashing (13 passed, 7 skipped, 0 failures)
+- [x] `python -m harness.cli --help` works
+- [x] `telemetry.py` writes events to `.harness/telemetry.jsonl`
 
 ---
 

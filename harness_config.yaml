@@ -1,0 +1,84 @@
+# harness_config.yaml — Zenith v4.0
+# Single source of truth for all runtime parameters.
+# All values overridable by CLI flags or environment variables.
+
+model:
+  name: "gemini-2.5-flash"          # Primary model
+  plan_model: null                   # If set, use for PLAN phase (e.g., gemini-2.5-pro)
+  base_url: null                     # null = default SDK endpoint
+  temperature_plan: 0.1
+  temperature_act: 0.0
+  temperature_reflect: 0.05
+  temperature_summarize: 0.0
+  seed: 42                           # For reproducibility
+  max_output_tokens: 4096
+  enable_thinking: false             # Enable only for PLAN on HIGH complexity
+  use_structured_output: true        # JSON schema mode for tool calls
+
+context:
+  max_context_tokens: 32000
+  response_reserve_tokens: 4000
+  persona_budget_tokens: 300
+  goal_budget_tokens: 200
+  repo_context_budget_tokens: 1000
+  working_memory_budget_tokens: 800
+  recent_turns_budget_tokens: 4000
+  compression_threshold: 0.70        # Trigger Rolling Summarizer at 70% full
+  observation_head_lines: 20
+  observation_tail_lines: 50
+  observation_mid_threshold: 300     # Lines: switch from no-trunc to head/tail mode
+  kv_cache_enabled: true             # Keep PERSONA+GOAL byte-identical for cache reuse
+
+agent:
+  max_steps: 25                      # Override with --max-steps
+  max_plan_revisions: 3
+  max_loop_count: 3
+  agent_mode: "auto"                 # auto | single | multi
+  multi_agent_threshold: "MEDIUM"    # Complexity that triggers multi-agent
+  complexity_scoring: true
+  rollback_checkpoints: true
+
+tools:
+  max_search_results: 50
+  max_read_lines: 250
+  max_symbol_output_lines: 50
+  max_reference_locations: 30
+  sandbox_timeout_sec: 30
+  sandbox_memory_mb: 512
+  test_suite_timeout_sec: 120
+  test_output_lines: 80
+  bash_output_lines: 200
+  git_diff_lines: 500
+  deduplicator_window: 10            # Fingerprint ring buffer size
+
+external_skills:
+  enabled: true
+  cache_ttl_hours: 24
+  max_tokens_per_snippet: 500
+  prefetch_at_startup: true
+  swebench_index_path: ".harness/swebench_index"
+  github_api_token_env: "GITHUB_TOKEN"   # Optional; increases rate limit
+
+verification:
+  run_syntax_check: true
+  run_lint_check: true
+  run_repro_test: true
+  run_full_regression: true
+  run_diff_audit: true
+  run_side_effect_check: true
+  linter: "ruff"                     # ruff | flake8 | eslint | golint
+  linter_fail_on_new_only: true      # Only fail on new violations
+
+telemetry:
+  enabled: true
+  output_dir: ".harness"
+  stream_to_stdout: false            # Enable with --verbose
+  include_full_prompts: false        # Debug only — increases file size dramatically
+  schema_version: "1.0"
+
+report:
+  auto_generate: true
+  format: "markdown"                 # markdown | json
+  include_cost_breakdown: true
+  include_diff: true
+  include_agent_decisions: true

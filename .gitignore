@@ -1,0 +1,49 @@
+# Python
+.venv/
+venv/
+ENV/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Harness Run Artifacts & Cache
+.harness/
+.cache/
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+
+# Environment & Secrets (NEVER COMMIT)
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Editor & OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
