@@ -409,13 +409,19 @@ def inject_recovery_prompt(
     elif code_val == ErrorCode.LOOP_DETECTED.value:
         tool = kwargs.get("tool", "tool")
         args = kwargs.get("args", {})
+        is_edit = str(tool) in ("apply_patch", "write_file", "edit_file")
+        action_1 = (
+            "1. Run git_rollback to restore clean state before retrying."
+            if is_edit
+            else "1. You already have the output from this tool. DO NOT repeat this call with identical arguments."
+        )
         return (
             f"LOOP DETECTED at step {step}: `{tool}({args})` called twice identically.\n"
             f"REQUIRED ACTIONS:\n"
-            f"1. Run git_rollback to restore clean state.\n"
-            f"2. Re-read the TARGET SECTION (±20 lines around your target).\n"
-            f"3. State in one sentence: what was DIFFERENT about what you found.\n"
-            f"4. Propose a DIFFERENT approach before any edit."
+            f"{action_1}\n"
+            f"2. If you found candidate files, read them using read_file_range.\n"
+            f"3. State in one sentence what your next action is.\n"
+            f"4. Propose a DIFFERENT tool or different arguments."
         )
 
     elif code_val == ErrorCode.TIMEOUT.value:

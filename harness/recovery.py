@@ -638,13 +638,18 @@ class RecoveryEngine:
     def _remediate_loop_detected(self, ctx: dict[str, Any], step: int) -> RecoveryAction:
         tool = ctx.get("tool", "tool")
         args = ctx.get("args", "args")
+        is_edit = str(tool) in ("apply_patch", "write_file", "edit_file")
+        if is_edit:
+            action_1 = "1. Run git_rollback to restore clean state before retrying."
+        else:
+            action_1 = "1. You already have the output from this tool. DO NOT repeat this call with identical arguments."
         prompt = (
             f"LOOP DETECTED at step {step}: `{tool}({args})` called twice identically.\n"
             "REQUIRED ACTIONS:\n"
-            "1. Run git_rollback to restore clean state.\n"
-            "2. Re-read the TARGET SECTION (±20 lines around your target).\n"
-            "3. State in one sentence: what was DIFFERENT about what you found.\n"
-            "4. Propose a DIFFERENT approach before any edit."
+            f"{action_1}\n"
+            "2. If you found candidate files, read them using read_file_range.\n"
+            "3. State in one sentence what your next action is.\n"
+            "4. Propose a DIFFERENT tool or different arguments."
         )
         return RecoveryAction(
             error_code=ErrorCode.LOOP_DETECTED,
