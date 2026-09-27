@@ -21,6 +21,13 @@ class TaskType(str, Enum):
     TEST = "TEST"
     DOCS = "DOCS"
     PERF = "PERF"
+    CONVERSATIONAL = "CONVERSATIONAL"
+
+
+class RequestType(str, Enum):
+    CONVERSATIONAL_REQUEST = "CONVERSATIONAL_REQUEST"
+    CODE_TASK = "CODE_TASK"
+    COMMAND = "COMMAND"
 
 
 class Complexity(str, Enum):
@@ -95,9 +102,12 @@ class EventType(str, Enum):
     DONE = "DONE"
     FAILED = "FAILED"
     INIT = "INIT"
+    PLAN_START = "PLAN_START"
     PLAN_EMIT = "PLAN_EMIT"
+    REPO_ANALYSIS = "REPO_ANALYSIS"
     DONE_CANDIDATE = "DONE_CANDIDATE"
     SESSION_START = "SESSION_START"
+    CONVERSATIONAL = "CONVERSATIONAL"
 
 
 class SubagentRole(str, Enum):
@@ -147,6 +157,15 @@ class ContractBase:
 
 
 # ─── L1: Issue Parser Contracts ────────────────────────────────────────
+
+@dataclass
+class ClassificationResult(ContractBase):
+    request_type: RequestType
+    category: str = "general"
+    confidence: float = 1.0
+    reasoning: str = ""
+    direct_response: str = ""
+
 
 @dataclass
 class SuspectedFile(ContractBase):
@@ -325,6 +344,7 @@ class TelemetryEvent(ContractBase):
     event_type: EventType = EventType.INIT
     tool: str | None = None
     tool_args_hash: str | None = None
+    tool_args: dict[str, Any] | None = None
     reasoning: str | None = None
     tokens_in: int = 0
     tokens_out: int = 0
@@ -340,6 +360,9 @@ class TelemetryEvent(ContractBase):
     context_tokens_used: int = 0
     context_budget: int = 32000
     context_utilization_pct: float = 0.0
+    evidence: list[str] | None = None
+    files_modified: list[str] | None = None
+    final_response: str | None = None
 
 
 @dataclass
@@ -351,3 +374,5 @@ class SessionResult(ContractBase):
     total_cost_usd: float
     total_wall_time_ms: int
     verification_result: VerificationResult | None = None
+    final_response: str = ""
+    modified_files: list[str] = field(default_factory=list)

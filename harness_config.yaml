@@ -3,12 +3,30 @@
 # All values overridable by CLI flags or environment variables.
 
 model:
-  name: "gemini-3.5-flash-lite"        # Primary model: free-tier high quota + fast throughput
+  provider: "gemini"                   # Provider: gemini | deepseek | qwen | openai
+  name: "gemini-3.5-flash-lite"        # Model ID (e.g. gemini-3.5-flash, deepseek-coder, qwen-2.5-coder-32b)
+  base_url: null                       # Custom endpoint (null = default provider endpoint)
+  api_key_env: null                    # Custom env var name for API key (e.g. DEEPSEEK_API_KEY, DASHSCOPE_API_KEY)
+  timeout: 60.0                        # Request timeout in seconds
+  max_retries: 3                       # Max retries on transient errors
+
+  # Provider Examples:
+  # DeepSeek:
+  #   provider: "deepseek"
+  #   name: "<evaluator-deepseek-model-id>"
+  #   base_url: "https://api.deepseek.com/v1"
+  #   api_key_env: "DEEPSEEK_API_KEY"
+  #
+  # Qwen (Alibaba Cloud Model Studio / DashScope / vLLM / Ollama):
+  #   provider: "qwen"
+  #   name: "<evaluator-qwen-model-id>"
+  #   base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"  # or custom evaluator endpoint
+  #   api_key_env: "DASHSCOPE_API_KEY"
+
   fallback_chain:                      # Auto-cascade fallback on rate limit / quota exhaustion
     - "gemini-3.5-flash"
     - "gemini-3.6-flash"
   plan_model: null                      # If set, use a different model for PLAN phase
-  base_url: null                        # null = default SDK endpoint
   temperature_plan: 0.1
   temperature_act: 0.0
   temperature_reflect: 0.05

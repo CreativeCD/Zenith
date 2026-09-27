@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# zenith — Autonomous Code Verification & Recovery Agent Launcher
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ZENITH_HOME="$SCRIPT_DIR"
+
+# Select Python environment (.venv preferred)
+if [[ -x "$ZENITH_HOME/.venv/bin/python" ]]; then
+  PYTHON="$ZENITH_HOME/.venv/bin/python"
+elif command -v python3 &>/dev/null; then
+  PYTHON="python3"
+else
+  PYTHON="python"
+fi
+
+# Load .env if present
+if [[ -f "$ZENITH_HOME/.env" ]]; then
+  set -a
+  source "$ZENITH_HOME/.env" 2>/dev/null || true
+  set +a
+fi
+
+exec "$PYTHON" -m harness.cli "$@"

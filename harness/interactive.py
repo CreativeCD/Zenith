@@ -123,9 +123,13 @@ class ZenithREPL:
             adapter=None,
         )
         self.repo_index_builder = RepoIndexBuilder(repo_path=self.repo_path)
-        self.adapter = MultiProviderAdapter(
-            model_name=config.model.name,
-        )
+        if getattr(config.model, "provider", None) and config.model.provider.lower() not in ("auto", ""):
+            from harness.adapters.factory import get_model_adapter
+            self.adapter = get_model_adapter(config.model)
+        else:
+            self.adapter = MultiProviderAdapter(
+                model_name=config.model.name,
+            )
         self.context_manager.adapter = self.adapter
         pc_cfg = getattr(config, "prompt_compression", None)
         self.prompt_compressor = PromptCompressor(
@@ -328,7 +332,12 @@ class ZenithREPL:
         """Render a sleek startup banner showcasing repository intelligence."""
         profile = self.profile_repository()
         repo_name = profile["name"]
+        key_pool = getattr(self.adapter, "key_pool", None)
         key_count = getattr(self.adapter, "total_keys", 0)
+        if key_count == 0 and key_pool:
+            key_count = key_pool.total_keys
+        elif key_count == 0 and getattr(self.adapter, "api_key", None):
+            key_count = 1
         provider_summary = getattr(self.adapter, "provider_summary", f"{key_count} active keys")
         banner_model = getattr(self.adapter, "model_name", self.config.model.name)
         skills_count = len(self.skill_manager.discover_skills())
@@ -1215,7 +1224,7 @@ class ZenithREPL:
             self._print_usage_footer(response)
 
             # Text-to-tool parsing fallback (tightened: explicit formats only)
-            if not emit_done_pending and not response.tool_calls and response.content:
+            if not emit_done_pending and not response.tool_calls and response.content and hasattr(self.adapter, "_parse_tool_calls_from_text"):
                 parsed_calls = self.adapter._parse_tool_calls_from_text(response.content)
                 if parsed_calls:
                     response.tool_calls = parsed_calls
@@ -1573,7 +1582,12 @@ class ZenithREPL:
 
         reply = ""
         # If adapter has keys, call the LLM (streamed for a live feel)
-        if self.adapter.key_pool and self.adapter.key_pool.total_keys > 0:
+        has_keys = bool(
+            getattr(self.adapter, "api_key", None)
+            or getattr(self.adapter, "total_keys", 0) > 0
+            or (getattr(self.adapter, "key_pool", None) and self.adapter.key_pool.total_keys > 0)
+        )
+        if has_keys:
             on_text, on_thought, finish_stream = self._make_stream_display("thinking")
             try:
                 response = await self.adapter.complete(
@@ -1589,7 +1603,7 @@ class ZenithREPL:
                 finish_stream()
             self._record_response_usage(response)
             self._print_usage_footer(response)
-            if response.content and "_ERROR:" not in response.content[:30]:
+            if response.content and "_ERROR:" not in response.content[:30] and not response.content.startswith("[GEMINI_ERROR"):
                 reply = response.content.strip()
 
         # Fallback if no API key or API call failed
@@ -1680,7 +1694,12 @@ class ZenithREPL:
 
     def _ensure_api_key(self) -> bool:
         """Prompt user for API key if no keys are found across any provider."""
-        if getattr(self.adapter, "total_keys", 0) > 0:
+        has_keys = bool(
+            getattr(self.adapter, "api_key", None)
+            or getattr(self.adapter, "total_keys", 0) > 0
+            or (getattr(self.adapter, "key_pool", None) and self.adapter.key_pool.total_keys > 0)
+        )
+        if has_keys:
             return True
 
         console.print(Panel(

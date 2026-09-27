@@ -16,8 +16,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from harness.adapters.base import ModelAdapter, ModelResponse
-from harness.adapters.multi_provider import MultiProviderAdapter
+from harness.adapters import ModelAdapter, ModelResponse, MultiProviderAdapter, get_model_adapter
 from harness.config import HarnessConfig
 from harness.context_manager import ContextManager, TurnRecord
 from harness.contracts import (
@@ -28,8 +27,10 @@ from harness.contracts import (
     ErrorCode,
     EventType,
     PlanStep,
+    RequestType,
     ResultStatus,
     SessionResult,
+    TelemetryEvent,
     ToolCall,
 )
 from harness.issue_parser import IssueParser
@@ -159,6 +160,8 @@ class Orchestrator:
         self.config = config or HarnessConfig()
         if model_adapter is not None:
             self.model_adapter = model_adapter
+        elif getattr(self.config.model, "provider", None) and self.config.model.provider.lower() not in ("auto", ""):
+            self.model_adapter = get_model_adapter(self.config.model)
         else:
             self.model_adapter = MultiProviderAdapter(
                 model_name=self.config.model.name,
@@ -219,6 +222,11 @@ class Orchestrator:
         self.revision_count = 0
         self.loop_count = 0
         self.checkpoints: dict[int, str] = {}
+        self._stop_requested = False
+
+    def request_stop(self) -> None:
+        """Signal the orchestrator loop to halt execution cleanly."""
+        self._stop_requested = True
 
     def format_reflection_prompt(
         self,
@@ -307,6 +315,26 @@ class Orchestrator:
         start_time = time.perf_counter()
         total_tokens = 0
         total_cost_usd = 0.0
+
+        # ─── 0. Pre-Flight Intent Routing (Layer 1) ───────────────────────
+        req_class = self.issue_parser.classify_request(issue_text)
+        if req_class.request_type == RequestType.CONVERSATIONAL_REQUEST:
+            direct_response = (
+                req_class.direct_response
+                or "Hello. I'm Zenith. What would you like me to inspect or fix?"
+            )
+            elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+            return SessionResult(
+                status=AgentPhase.DONE,
+                exit_code=0,
+                total_steps=0,
+                total_tokens=0,
+                total_cost_usd=0.0,
+                total_wall_time_ms=elapsed_ms,
+                verification_result=None,
+                final_response=direct_response,
+                modified_files=[],
+            )
 
         # ─── 1. INIT Phase ─────────────────────────────────────────────────
         self.current_phase = AgentPhase.INIT
@@ -491,6 +519,10 @@ class Orchestrator:
             AgentPhase.DONE,
             AgentPhase.FAILED,
         ):
+            if getattr(self, "_stop_requested", False):
+                self.current_phase = AgentPhase.FAILED
+                break
+
             # Checkpoint trigger
             if self.current_step in agent_plan.rollback_checkpoints:
                 self.capture_checkpoint(self.current_step)
@@ -591,13 +623,15 @@ class Orchestrator:
                         t_args = turn_response.tool_calls[0].args or {}
                         # Constructed for validation only; verification derives
                         # the authoritative file list from git status.
-                        DoneCandidate(
+                        candidate = DoneCandidate(
                             confidence=float(t_args.get("confidence", 1.0)),
                             evidence=list(t_args.get("evidence", [])),
                             files_modified=list(t_args.get("files_modified", [])),
                         )
                     else:
-                        parse_done_candidate(content)
+                        candidate = parse_done_candidate(content)
+
+                    self.last_done_candidate = candidate
 
                     self.current_phase = AgentPhase.DONE_CANDIDATE
                     self.telemetry.log_event(
@@ -711,6 +745,7 @@ class Orchestrator:
                     tool_name=t_call.tool,
                     args_hash=t_call.fingerprint or "",
                     reasoning=t_call.reasoning,
+                    tool_args=t_call.args,
                 )
 
                 tool_res = self.tool_engine.execute(t_call)
@@ -810,6 +845,29 @@ class Orchestrator:
         elapsed_ms = int((time.perf_counter() - start_time) * 1000)
         exit_code = 0 if self.current_phase == AgentPhase.DONE else 1
 
+        final_resp = ""
+        mod_files = []
+        if getattr(self, "last_done_candidate", None):
+            mod_files = getattr(self.last_done_candidate, "files_modified", [])
+            evidence = getattr(self.last_done_candidate, "evidence", [])
+            final_resp = "\n".join(evidence) if evidence else ""
+        if not final_resp and self.current_phase == AgentPhase.DONE:
+            final_resp = f"Successfully resolved {getattr(issue_plan, 'primary_goal', 'issue')}. Verified all 6 gates."
+
+        # Emit final completion / failure event to telemetry so all streaming listeners receive it
+        self.telemetry.append(
+            TelemetryEvent(
+                step=self.current_step,
+                phase=self.current_phase,
+                agent="orchestrator",
+                event_type=EventType.DONE if self.current_phase == AgentPhase.DONE else EventType.FAILED,
+                reasoning=final_resp or f"Completed with status {self.current_phase.value}",
+                final_response=final_resp,
+                files_modified=mod_files,
+                result_status=ResultStatus.SUCCESS if self.current_phase == AgentPhase.DONE else ResultStatus.FAIL,
+            )
+        )
+
         return SessionResult(
             status=self.current_phase,
             exit_code=exit_code,
@@ -818,4 +876,6 @@ class Orchestrator:
             total_cost_usd=total_cost_usd,
             total_wall_time_ms=elapsed_ms,
             verification_result=verification_result,
+            final_response=final_resp,
+            modified_files=mod_files,
         )
