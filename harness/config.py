@@ -26,8 +26,12 @@ load_dotenv()
 @dataclass
 class ModelConfig:
     name: str = "gemini-2.5-flash"
-    plan_model: str | None = None
+    provider: str = "gemini"
+    api_key_env: str | None = None
     base_url: str | None = None
+    timeout: float = 60.0
+    max_retries: int = 3
+    plan_model: str | None = None
     temperature_plan: float = 0.1
     temperature_act: float = 0.0
     temperature_reflect: float = 0.05
@@ -151,15 +155,51 @@ class HarnessConfig:
         """Validate paths, boundaries, and required environment credentials."""
         # API Key check (unless dry_run)
         if not self.dry_run and not self.model.api_keys and not self.model.api_key:
-            from harness.adapters.key_pool import KeyPoolManager
-            env_keys = KeyPoolManager._load_keys_from_env()
-            if not env_keys:
-                raise OSError(
-                    "AI_API_KEY environment variable is not set or empty. "
-                    "Define AI_API_KEY in your environment or .env file."
-                )
-            self.model.api_keys = env_keys
-            self.model.api_key = env_keys[0]
+            provider = (self.model.provider or "gemini").lower()
+            if provider == "gemini":
+                from harness.adapters.key_pool import KeyPoolManager
+                env_keys = KeyPoolManager._load_keys_from_env()
+                if not env_keys:
+                    raise OSError(
+                        "AI_API_KEY environment variable is not set or empty. "
+                        "Define AI_API_KEY in your environment or .env file."
+                    )
+                self.model.api_keys = env_keys
+                self.model.api_key = env_keys[0]
+            else:
+                key_env = self.model.api_key_env
+                resolved_key = os.environ.get(key_env) if key_env else None
+                hint_env = key_env or "API_KEY"
+
+                if not resolved_key:
+                    if provider == "deepseek":
+                        resolved_key = os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("OPENAI_API_KEY")
+                        hint_env = key_env or "DEEPSEEK_API_KEY"
+                    elif provider == "qwen":
+                        resolved_key = (
+                            os.environ.get("DASHSCOPE_API_KEY")
+                            or os.environ.get("QWEN_API_KEY")
+                            or os.environ.get("OPENAI_API_KEY")
+                        )
+                        hint_env = key_env or "DASHSCOPE_API_KEY (or QWEN_API_KEY)"
+                    else:
+                        resolved_key = os.environ.get("OPENAI_API_KEY")
+                        hint_env = key_env or "OPENAI_API_KEY"
+
+                if not resolved_key:
+                    raise OSError(
+                        f"API key for provider '{provider}' not found. "
+                        f"Please set {hint_env} in your environment or configure model.api_key_env."
+                    )
+                self.model.api_key = resolved_key
+
+        # Check required base_url for providers that lack a safe universal default
+        provider = (self.model.provider or "gemini").lower()
+        if provider == "qwen" and not self.model.base_url and not os.environ.get("DASHSCOPE_API_KEY"):
+            raise ValueError(
+                "base_url is required for provider 'qwen' (e.g. 'https://dashscope.aliyuncs.com/compatible-mode/v1' "
+                "or your evaluator's endpoint). Please configure model.base_url in harness_config.yaml or pass --base-url."
+            )
 
         # GitHub token resolution
         if not self.external_skills.github_token:
@@ -230,8 +270,14 @@ def load_config(
             cfg.trust = True
         if cli_args.get("issue"):
             cfg.issue_path = cli_args["issue"]
+        if cli_args.get("provider"):
+            cfg.model.provider = cli_args["provider"]
         if cli_args.get("model"):
             cfg.model.name = cli_args["model"]
+        if cli_args.get("base_url"):
+            cfg.model.base_url = cli_args["base_url"]
+        if cli_args.get("api_key_env"):
+            cfg.model.api_key_env = cli_args["api_key_env"]
         if cli_args.get("max_steps") is not None:
             cfg.agent.max_steps = int(cli_args["max_steps"])
         if cli_args.get("temperature") is not None:
@@ -259,13 +305,29 @@ def load_config(
         if repo_env.exists():
             load_dotenv(repo_env)
 
-    # Load API Keys from environment if present
-    from harness.adapters.key_pool import KeyPoolManager
-    env_keys = KeyPoolManager._load_keys_from_env()
-    if env_keys:
-        cfg.model.api_keys = env_keys
-        cfg.model.api_key = env_keys[0]
+    # Load API Keys from environment if present based on provider
+    provider = (cfg.model.provider or "gemini").lower()
+    if provider == "gemini":
+        from harness.adapters.key_pool import KeyPoolManager
+        env_keys = KeyPoolManager._load_keys_from_env()
+        if env_keys:
+            cfg.model.api_keys = env_keys
+            cfg.model.api_key = env_keys[0]
+        else:
+            cfg.model.api_key = os.environ.get("AI_API_KEY")
     else:
-        cfg.model.api_key = os.environ.get("AI_API_KEY")
+        key_env = cfg.model.api_key_env
+        if key_env and os.environ.get(key_env):
+            cfg.model.api_key = os.environ.get(key_env)
+        elif provider == "deepseek":
+            cfg.model.api_key = os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("OPENAI_API_KEY")
+        elif provider == "qwen":
+            cfg.model.api_key = (
+                os.environ.get("DASHSCOPE_API_KEY")
+                or os.environ.get("QWEN_API_KEY")
+                or os.environ.get("OPENAI_API_KEY")
+            )
+        else:
+            cfg.model.api_key = os.environ.get("OPENAI_API_KEY")
 
     return cfg

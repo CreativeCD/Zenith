@@ -19,8 +19,10 @@ from harness.adapters.base import ModelAdapter
 from harness.config import HarnessConfig
 from harness.contracts import (
     AgentMode,
+    ClassificationResult,
     Complexity,
     IssuePlan,
+    RequestType,
     SuspectedFile,
     TaskType,
 )
@@ -52,6 +54,142 @@ EXTERNAL_KNOWLEDGE_PATTERN = re.compile(
     r"\b(RFC\s*\d+|PEP\s*\d+|CVE-\d+-\d+|standard|specification|protocol|external\s+api)\b",
     re.IGNORECASE,
 )
+
+# ─── Task Classification & Routing Engine (Layer 1 Router) ────────────────────
+
+GREETING_PATTERN = re.compile(
+    r"^(hi|hello|hey|yo|sup|howdy|greetings|good\s+(?:morning|afternoon|evening|day))(?:\s+(?:there|zenith|agent|bot|friend|team))?[!.\s]*$",
+    re.IGNORECASE,
+)
+
+CAPABILITY_PATTERN = re.compile(
+    r"^(?:(?:can\s+you|what\s+can\s+you|what\s+do\s+you|who\s+are\s+you|what\s+are\s+you|what\s+is\s+zenith|tell\s+me\s+about\s+(?:yourself|zenith)|how\s+do\s+you\s+work|how\s+does\s+zenith\s+work|what\s+are\s+your\s+capabilities|help|how\s+to\s+use|can\s+zenith\s+help)(?:\s+(?:do|help|me|with))?)[?!\s]*$",
+    re.IGNORECASE,
+)
+
+ACK_PATTERN = re.compile(
+    r"^(thanks|thank\s+you|thx|cool|ok|okay|great|nice|awesome|got\s+it|sounds\s+good|perfect|cheers)[!.\s]*$",
+    re.IGNORECASE,
+)
+
+COMMAND_MAP = {
+    "exit": "EXIT",
+    "quit": "EXIT",
+    ":q": "EXIT",
+    "q": "EXIT",
+    "clear": "CLEAR",
+    "cls": "CLEAR",
+    "diff": "CMD_DIFF",
+    ":diff": "CMD_DIFF",
+    "verify": "CMD_VERIFY",
+    ":verify": "CMD_VERIFY",
+    "inspect": "CMD_INSPECT",
+    ":inspect": "CMD_INSPECT",
+    "status": "CMD_STATUS",
+    ":status": "CMD_STATUS",
+    "help": "HELP",
+    ":help": "HELP",
+    "-h": "HELP",
+    "--help": "HELP",
+    "?": "HELP",
+}
+
+CODE_TASK_VERBS = re.compile(
+    r"\b(fix|repair|recover|resolve|solve|patch|implement|refactor|debug|trace|reproduce|test|failing|broken|crash|timeout|audit|modify|update|optimize|inspect|investigate|checkout|diff|commit|git|run|build|compile)\b",
+    re.IGNORECASE,
+)
+
+CODE_INDICATORS = re.compile(
+    r"(\b(def|class|function|const|let|var|import|return|await|async|promise)\b|`[^`]+`|\b[a-zA-Z0-9_]+\(\)|\b[a-zA-Z0-9_\-\.]+\.(?:py|js|jsx|ts|tsx|go|rs|java|json|yaml|yml|html|css|md)\b|\b\d{3}\b|\b(null|undefined|nil|none)\b)",
+    re.IGNORECASE,
+)
+
+
+def classify_user_request(text: str) -> ClassificationResult:
+    """Classify user input into COMMAND, CONVERSATIONAL_REQUEST, or CODE_TASK.
+
+    Ensures that normal conversational messages never activate repository scanning,
+    code modifications, or verification gates.
+    """
+    cleaned = text.strip()
+    if not cleaned:
+        return ClassificationResult(
+            request_type=RequestType.COMMAND,
+            category="EMPTY",
+            reasoning="Empty input",
+            direct_response="",
+        )
+
+    lower = cleaned.lower()
+
+    # 1. Built-in interactive commands
+    if lower in COMMAND_MAP:
+        cmd = COMMAND_MAP[lower]
+        return ClassificationResult(
+            request_type=RequestType.COMMAND,
+            category=cmd,
+            reasoning=f"Matched command {cmd}",
+            direct_response="",
+        )
+
+    # 2. Greetings
+    if GREETING_PATTERN.match(cleaned):
+        return ClassificationResult(
+            request_type=RequestType.CONVERSATIONAL_REQUEST,
+            category="GREETING",
+            reasoning="User sent a conversational greeting",
+            direct_response="Hello. I'm Zenith. What would you like me to inspect or fix?",
+        )
+
+    # 3. Capability / Identity inquiries
+    if CAPABILITY_PATTERN.match(cleaned):
+        return ClassificationResult(
+            request_type=RequestType.CONVERSATIONAL_REQUEST,
+            category="CAPABILITY",
+            reasoning="User asked about agent capabilities or identity",
+            direct_response="I can inspect repositories, investigate code issues, recover broken implementations, and verify changes.",
+        )
+
+    # 4. Acknowledgments
+    if ACK_PATTERN.match(cleaned):
+        return ClassificationResult(
+            request_type=RequestType.CONVERSATIONAL_REQUEST,
+            category="ACK",
+            reasoning="User sent an acknowledgment or pleasantry",
+            direct_response="Glad to help. What would you like to inspect or fix next?",
+        )
+
+    # 5. Check for Code Task indicators (verbs, exceptions, file paths, code syntax)
+    has_code_verbs = bool(CODE_TASK_VERBS.search(cleaned))
+    has_exceptions = bool(EXCEPTION_PATTERN.search(cleaned))
+    has_file_paths = bool(FILE_PATH_PATTERN.search(cleaned))
+    has_code_syntax = bool(CODE_INDICATORS.search(cleaned))
+
+    if has_code_verbs or has_exceptions or has_file_paths or has_code_syntax:
+        return ClassificationResult(
+            request_type=RequestType.CODE_TASK,
+            category="CODE_TASK",
+            reasoning="Request contains code actions, exceptions, file paths, or programming syntax",
+            direct_response="",
+        )
+
+    # 6. General conversational fall-through (questions/statements without any code intent)
+    word_count = len(cleaned.split())
+    if word_count < 15 and not any(ch in cleaned for ch in ["/", "\\", "{", "}", ";", "=", ">", "<"]):
+        return ClassificationResult(
+            request_type=RequestType.CONVERSATIONAL_REQUEST,
+            category="CHITCHAT",
+            reasoning="Short natural language input without code or repository indicators",
+            direct_response="I am Zenith, an autonomous code verification and recovery agent. What would you like me to inspect or fix?",
+        )
+
+    # Default to code task if substantial description was provided
+    return ClassificationResult(
+        request_type=RequestType.CODE_TASK,
+        category="CODE_TASK",
+        reasoning="Multi-word task description dispatched to autonomous coding pipeline",
+        direct_response="",
+    )
 
 
 def calculate_complexity(
@@ -124,6 +262,10 @@ class IssueParser:
     ) -> None:
         self.config = config
         self.model_adapter = model_adapter
+
+    def classify_request(self, text: str) -> ClassificationResult:
+        """Classify user input into COMMAND, CONVERSATIONAL_REQUEST, or CODE_TASK."""
+        return classify_user_request(text)
 
     def parse_issue(self, issue_input: str, repo_path: str = ".") -> IssuePlan:
         """Synchronously parse an issue text or issue file path."""
@@ -248,24 +390,29 @@ class IssueParser:
                 test_conf = 0.85
 
         # 6. Task type extraction
-        task_type = TaskType.BUG_FIX
-        task_conf = 0.80
-        text_lower = raw_text.lower()
-        if any(w in text_lower for w in ["add feature", "implement new", "feature request", "support for", "add support"]):
-            task_type = TaskType.FEATURE
-            task_conf = 0.90
-        elif any(w in text_lower for w in ["refactor", "cleanup", "reorganize"]):
-            task_type = TaskType.REFACTOR
-            task_conf = 0.88
-        elif any(w in text_lower for w in ["add unit test", "flaky test", "test coverage"]):
-            task_type = TaskType.TEST
-            task_conf = 0.85
-        elif any(w in text_lower for w in ["docstring", "documentation", "typo in doc", "readme"]):
-            task_type = TaskType.DOCS
-            task_conf = 0.88
-        elif any(w in text_lower for w in ["slow", "latency", "performance", "optimize"]):
-            task_type = TaskType.PERF
-            task_conf = 0.85
+        req_class = self.classify_request(raw_text)
+        if req_class.request_type == RequestType.CONVERSATIONAL_REQUEST:
+            task_type = TaskType.CONVERSATIONAL
+            task_conf = 1.0
+        else:
+            task_type = TaskType.BUG_FIX
+            task_conf = 0.80
+            text_lower = raw_text.lower()
+            if any(w in text_lower for w in ["add feature", "implement new", "feature request", "support for", "add support"]):
+                task_type = TaskType.FEATURE
+                task_conf = 0.90
+            elif any(w in text_lower for w in ["refactor", "cleanup", "reorganize"]):
+                task_type = TaskType.REFACTOR
+                task_conf = 0.88
+            elif any(w in text_lower for w in ["add unit test", "flaky test", "test coverage"]):
+                task_type = TaskType.TEST
+                task_conf = 0.85
+            elif any(w in text_lower for w in ["docstring", "documentation", "typo in doc", "readme"]):
+                task_type = TaskType.DOCS
+                task_conf = 0.88
+            elif any(w in text_lower for w in ["slow", "latency", "performance", "optimize"]):
+                task_type = TaskType.PERF
+                task_conf = 0.85
 
         # 7. Primary goal & Acceptance criteria
         lines = [line_item.strip() for line_item in raw_text.splitlines() if line_item.strip()]

@@ -99,6 +99,17 @@ class TelemetryWriter:
         self.cumulative_cost_usd: float = 0.0
         self.current_step: int = 0
         self.events_count: int = 0
+        self.listeners: list[Any] = []
+
+    def add_listener(self, listener: Any) -> None:
+        """Register a callback for real-time telemetry events."""
+        if listener not in self.listeners:
+            self.listeners.append(listener)
+
+    def remove_listener(self, listener: Any) -> None:
+        """Unregister a telemetry event callback."""
+        if listener in self.listeners:
+            self.listeners.remove(listener)
 
     def append(self, event: TelemetryEvent) -> None:
         """Write a TelemetryEvent to the JSONL log file and update cumulative metrics."""
@@ -135,6 +146,13 @@ class TelemetryWriter:
             f.write(json.dumps(record) + "\n")
 
         self.events_count += 1
+
+        # Notify active streaming listeners
+        for listener in list(self.listeners):
+            try:
+                listener(record)
+            except Exception:
+                pass
 
         if self.stream_to_stdout:
             self._print_stream(event)
@@ -228,7 +246,14 @@ class TelemetryWriter:
             )
         )
 
-    def log_tool_call(self, step: int, tool_name: str, args_hash: str, reasoning: str) -> None:
+    def log_tool_call(
+        self,
+        step: int,
+        tool_name: str,
+        args_hash: str,
+        reasoning: str,
+        tool_args: dict[str, Any] | None = None,
+    ) -> None:
         self.append(
             TelemetryEvent(
                 step=step,
@@ -236,6 +261,7 @@ class TelemetryWriter:
                 phase=AgentPhase.ACT,
                 tool=tool_name,
                 tool_args_hash=args_hash,
+                tool_args=tool_args,
                 reasoning=reasoning,
             )
         )
