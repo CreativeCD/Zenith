@@ -110,10 +110,8 @@ class ZenithREPL:
             adapter=None,
         )
         self.repo_index_builder = RepoIndexBuilder(repo_path=self.repo_path)
-        self.adapter = GeminiAdapter(
-            model_name=config.model.name,
-            key_pool=None,
-        )
+        from harness.adapters.factory import get_model_adapter
+        self.adapter = get_model_adapter(config.model)
         self.context_manager.adapter = self.adapter
         self.tool_engine = ToolEngine(
             repo_root=self.repo_path,
@@ -243,7 +241,8 @@ class ZenithREPL:
         """Render a sleek startup banner showcasing repository intelligence."""
         profile = self.profile_repository()
         repo_name = profile["name"]
-        key_count = self.adapter.key_pool.total_keys
+        key_pool = getattr(self.adapter, "key_pool", None)
+        key_count = key_pool.total_keys if key_pool else (1 if getattr(self.adapter, "api_key", None) else 0)
         model_name = self.config.model.name
         skills_count = len(self.skill_manager.discover_skills())
 
@@ -720,7 +719,7 @@ class ZenithREPL:
                 )
 
             # Text-to-tool parsing fallback
-            if not response.tool_calls and response.content:
+            if not response.tool_calls and response.content and hasattr(self.adapter, "_parse_tool_calls_from_text"):
                 parsed_calls = self.adapter._parse_tool_calls_from_text(response.content)
                 if parsed_calls:
                     response.tool_calls = parsed_calls
@@ -939,7 +938,11 @@ class ZenithREPL:
 
         reply = ""
         # If adapter has keys, call the LLM!
-        if self.adapter.key_pool and self.adapter.key_pool.total_keys > 0:
+        has_keys = bool(
+            getattr(self.adapter, "api_key", None)
+            or (getattr(self.adapter, "key_pool", None) and self.adapter.key_pool.total_keys > 0)
+        )
+        if has_keys:
             with console.status("[bold cyan]Zenith is thinking...[/bold cyan]", spinner="dots"):
                 try:
                     response = await self.adapter.complete(
@@ -1018,8 +1021,12 @@ class ZenithREPL:
     # ─── API KEY SETUP & SESSION RUNNER ───────────────────────────────────────
 
     def _ensure_api_key(self) -> bool:
-        """Prompt user for Gemini API key if no keys are found in environment."""
-        if self.adapter.key_pool.total_keys > 0:
+        """Prompt user for API key if no keys are found in environment."""
+        has_keys = bool(
+            getattr(self.adapter, "api_key", None)
+            or (getattr(self.adapter, "key_pool", None) and self.adapter.key_pool.total_keys > 0)
+        )
+        if has_keys:
             return True
 
         console.print(Panel(

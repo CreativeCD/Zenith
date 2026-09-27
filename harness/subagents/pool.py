@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 
 from harness.adapters.base import ModelAdapter
 from harness.contracts import IssuePlan, SubagentRole

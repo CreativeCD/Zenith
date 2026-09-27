@@ -1,0 +1,9 @@
+{
+  "name": "zenith",
+  "version": "4.0.0",
+  "description": "Zenith — Autonomous AI Coding Harness",
+  "scripts": {
+    "zenith": "./zenith",
+    "start": "./zenith"
+  }
+}

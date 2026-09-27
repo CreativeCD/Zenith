@@ -1,0 +1,143 @@
+:root {
+  --bg-primary: #090a0c;
+  --bg-surface: #101114;
+  --bg-surface-elevated: #15171b;
+  --bg-surface-active: #1b1e23;
+  --border-subtle: #1e2024;
+  --border-medium: #2a2d33;
+  --border-focus: #3e424b;
+
+  --text-primary: #ededed;
+  --text-secondary: #90949d;
+  --text-muted: #5e626b;
+  --text-code: #dcdfe4;
+
+  --status-ready: #71717a;
+  --status-running: #e4e4e7;
+  --status-success: #22c55e;
+  --status-success-dim: #15803d;
+  --status-fail: #ef4444;
+  --status-fail-dim: #b91c1c;
+
+  --diff-add-bg: rgba(34, 197, 94, 0.12);
+  --diff-add-border: rgba(34, 197, 94, 0.3);
+  --diff-add-text: #4ade80;
+  --diff-del-bg: rgba(239, 68, 68, 0.12);
+  --diff-del-border: rgba(239, 68, 68, 0.3);
+  --diff-del-text: #f87171;
+
+  --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+}
+
+/* Custom minimal scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-medium);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-focus);
+}
+
+button {
+  font-family: inherit;
+  font-size: inherit;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: inherit;
+}
+
+textarea, input {
+  font-family: inherit;
+  font-size: inherit;
+  border: none;
+  background: none;
+  color: inherit;
+  outline: none;
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+/* Terminal Pulse Animation for ◌ */
+@keyframes pulse-spin {
+  0% {
+    opacity: 0.4;
+    transform: rotate(0deg);
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.4;
+    transform: rotate(360deg);
+  }
+}
+
+.animate-pulse-slow {
+  animation: pulse-spin 2s linear infinite;
+  display: inline-block;
+}
+
+/* Terminal Blink */
+@keyframes cursor-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.terminal-cursor {
+  display: inline-block;
+  width: 7px;
+  height: 15px;
+  background: var(--text-primary);
+  vertical-align: middle;
+  margin-left: 2px;
+  animation: cursor-blink 1s infinite;
+}
+
+/* Terminal Monospace Spinner for Loading States */
+@keyframes terminal-spin {
+  to { transform: rotate(360deg); }
+}
+
+.terminal-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid var(--border-medium);
+  border-top-color: var(--text-primary);
+  border-radius: 50%;
+  animation: terminal-spin 0.65s linear infinite;
+  vertical-align: middle;
+}
