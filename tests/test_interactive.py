@@ -203,3 +203,40 @@ def test_repl_auto_debug_alias(dummy_config, monkeypatch):
     monkeypatch.setattr(repl, "autonomous_investigation", mock_investigation)
     asyncio.run(repl.auto_debug())
     assert len(called) == 1
+
+
+def test_is_conversational_or_informational(dummy_config):
+    repl = ZenithREPL(config=dummy_config)
+
+    # Informational and conversational queries
+    assert repl._is_conversational_or_informational("what is ur name") is True
+    assert repl._is_conversational_or_informational("what is your name") is True
+    assert repl._is_conversational_or_informational("what is this flolder name") is True
+    assert repl._is_conversational_or_informational("what is this folder name") is True
+    assert repl._is_conversational_or_informational("what repo is this") is True
+    assert repl._is_conversational_or_informational("who are you") is True
+    assert repl._is_conversational_or_informational("what are you doing") is True
+    assert repl._is_conversational_or_informational("hi") is True
+    assert repl._is_conversational_or_informational("hello") is True
+    assert repl._is_conversational_or_informational("thank you") is True
+
+    # Engineering / action tasks should NOT be conversational
+    assert repl._is_conversational_or_informational("fix the bug in priority.py") is False
+    assert repl._is_conversational_or_informational("find issues in the repo") is False
+    assert repl._is_conversational_or_informational("run test suite") is False
+    assert repl._is_conversational_or_informational("patch broken calculation") is False
+
+
+def test_conversational_name_and_folder_replies(dummy_config):
+    repl = ZenithREPL(config=dummy_config)
+
+    # 1. Ask name
+    asyncio.run(repl.process_user_message("what is ur name"))
+    assert len(repl.history) == 2
+    assert "Zenith" in repl.history[1]["content"]
+
+    # 2. Ask folder name
+    asyncio.run(repl.process_user_message("what is this flolder name"))
+    assert len(repl.history) == 4
+    assert Path(dummy_config.repo_path).name in repl.history[3]["content"]
+

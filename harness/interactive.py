@@ -673,6 +673,7 @@ class ZenithREPL:
         max_turns = max(getattr(self.config.agent, "max_steps", 40), 40)
         current_turn = 0
         loop_detections_in_a_row = 0
+        modified_files: set[str] = set()
 
         system_prompt = self._build_system_prompt()
 
@@ -781,11 +782,15 @@ class ZenithREPL:
                         )
                     elif tc.tool == "apply_patch":
                         tf = tc.args.get("target_file", "")
+                        if tool_res.status == ResultStatus.SUCCESS:
+                            modified_files.add(tf)
                         self.context_manager.update_working_memory(
                             edit_applied=f"Patched {tf}",
                         )
                     elif tc.tool == "write_file":
                         fp = tc.args.get("file_path", "")
+                        if tool_res.status == ResultStatus.SUCCESS:
+                            modified_files.add(fp)
                         self.context_manager.update_working_memory(
                             edit_applied=f"Created {fp}",
                         )
@@ -850,22 +855,61 @@ class ZenithREPL:
             else:
                 break
 
-        # ── Final Verification Gate ──
-        diff_res = git_diff(repo_root=self.repo_path)
-        if diff_res.status == ResultStatus.SUCCESS and diff_res.raw_output and not diff_res.raw_output.startswith("Working tree clean"):
-            console.print("\n[bold green]══════════════════════════════════════════════════════════════════════[/bold green]")
-            console.print("[bold green]🎉 CODEBASE REPAIRED & VERIFIED![/bold green]")
-            console.print("[bold green]══════════════════════════════════════════════════════════════════════[/bold green]")
-            syntax = Syntax(diff_res.raw_output, "diff", theme="monokai", line_numbers=True)
-            console.print(Panel(syntax, title="Verified Git Diff", border_style="green"))
+        # ── Final Verification Gate (ONLY if files were modified in THIS loop execution) ──
+        if modified_files:
+            diff_res = git_diff(repo_root=self.repo_path)
+            if diff_res.status == ResultStatus.SUCCESS and diff_res.raw_output and not diff_res.raw_output.startswith("Working tree clean"):
+                syntax = Syntax(diff_res.raw_output, "diff", theme="monokai", line_numbers=True)
+                console.print(Panel(syntax, title="Verified Git Diff", border_style="green"))
 
-            final_tests = run_test_suite(repo_root=self.repo_path)
-            if final_tests.exit_code == 0:
-                console.print("[bold green]✅ Test suite verification: ALL TESTS PASSING CLEANLY[/bold green]\n")
-            else:
-                console.print(f"[bold yellow]⚠️  Verification note: Test suite returned exit code {final_tests.exit_code}[/bold yellow]\n")
+                final_tests = run_test_suite(repo_root=self.repo_path)
+                if final_tests.exit_code == 0:
+                    console.print("[bold green]✅ Test suite verification: ALL TESTS PASSING CLEANLY[/bold green]\n")
+                else:
+                    console.print(f"[bold yellow]⚠️  Verification note: Test suite returned exit code {final_tests.exit_code}[/bold yellow]\n")
 
     # ─── NATURAL LANGUAGE ROUTER ─────────────────────────────────────────────
+
+    def _is_conversational_or_informational(self, msg: str) -> bool:
+        """Determine if a user message is a conversational query, greeting, or identity/folder question."""
+        cleaned = msg.strip().lower()
+        words = set(re.findall(r"\w+", cleaned))
+
+        # 1. Greetings
+        greetings = {"hi", "hello", "hey", "hola", "yo", "howdy", "sup", "greetings"}
+        if cleaned in greetings or any(cleaned.startswith(f"{g} ") for g in greetings):
+            return True
+
+        # 2. Pleasantries / acknowledgments
+        pleasantries = {"thanks", "thank you", "ok", "okay", "cool", "nice", "awesome", "great", "sure", "got it", "fine"}
+        if cleaned in pleasantries:
+            return True
+
+        # 3. Identity & self-inquiries ("what is ur name", "who are you", "what are you", "who made you")
+        if any(phrase in cleaned for phrase in (
+            "your name", "ur name", "who are you", "who r u", "what are you", "what r u",
+            "what can you do", "tell me about yourself", "who made you", "what is zenith"
+        )):
+            return True
+
+        # 4. Status inquiries ("what are you doing", "what r u doing", "what's up", "how are you")
+        if any(phrase in cleaned for phrase in (
+            "what are you doing", "what r u doing", "what are u doing", "what you doing",
+            "what are you working on", "what is your status", "whats up", "what's up",
+            "how are you", "how are you doing", "how r u", "how do you work", "how does it work"
+        )):
+            return True
+
+        # 5. Repo / folder / directory inquiries ("what is this folder name", "what folder is this", "what is the repo name")
+        action_verbs = {"fix", "repair", "edit", "change", "modify", "patch", "write", "create", "delete", "remove", "add", "run", "test", "debug"}
+        if not words.intersection(action_verbs):
+            if any(phrase in cleaned for phrase in (
+                "folder name", "flolder name", "directory name", "repo name", "repository name",
+                "project name", "what folder", "what repo", "what project", "where am i", "current folder", "current directory"
+            )):
+                return True
+
+        return False
 
     async def handle_conversational_message(self, user_msg: str) -> None:
         """Handle conversational chit-chat, greetings, and status inquiries dynamically via LLM."""
@@ -881,11 +925,14 @@ class ZenithREPL:
         system_prompt = (
             f"You are Zenith, an expert AI software engineering assistant (inspired by Claude Code).\n"
             f"You are operating in repository '{repo_name}' ({stack}).\n"
+            f"Repository root directory: {self.repo_path}\n"
             f"Current state: {active_issue_str}. {examined_str}.\n\n"
             f"CONVERSATIONAL GUIDELINES:\n"
-            f"- The user is chatting with you or asking a question (greeting, asking what you are doing, who you are, or general conversation).\n"
+            f"- The user is chatting with you or asking an informational question (greeting, identity/name, status, folder/repository info, or general discussion).\n"
             f"- Respond directly, concisely, and naturally as an intelligent engineering partner.\n"
             f"- DO NOT call tools or emit tool JSON. Answer conversationally in markdown text.\n"
+            f"- If the user asks for your name or identity, state that your name is Zenith, an autonomous AI software engineer.\n"
+            f"- If the user asks about the folder, directory, or repository name, tell them the repository name is '{repo_name}' located at '{self.repo_path}'.\n"
             f"- If the user asks what you are doing, explain your current state in {repo_name}, mention what you can do (inspect code, diagnose bugs, run test suites, apply fixes), and invite them to give you a task or issue to work on.\n"
             f"- Be conversational, helpful, and natural (avoid repetitive canned phrases)."
         )
@@ -911,10 +958,14 @@ class ZenithREPL:
             cleaned = user_msg.strip().lower()
             if any(cleaned.startswith(g) for g in ("hi", "hello", "hey", "hola", "yo", "greetings", "howdy", "sup")):
                 reply = f"Hello! I'm Zenith, your AI engineering assistant in **{repo_name}**. What would you like to build, inspect, or fix in this project today?"
+            elif any(k in cleaned for k in ("name", "who are you", "what are you", "what can you do", "ur name", "your name")):
+                reply = f"I am Zenith, an expert autonomous AI software engineer. I'm operating in **{repo_name}** ({stack}). How can I help you today?"
+            elif any(k in cleaned for k in ("folder", "flolder", "directory", "repo", "project name", "where am i")):
+                reply = f"The folder name (or repository name) is **{repo_name}** (`{self.repo_path}`)."
             elif "what" in cleaned and ("doing" in cleaned or "working on" in cleaned or "status" in cleaned):
                 reply = f"I'm currently standing by in **{repo_name}** ({stack}). I'm ready to inspect code, diagnose bugs, run tests, or implement fixes. What task would you like to work on?"
-            elif "who" in cleaned or "what can you do" in cleaned or "help" in cleaned:
-                reply = f"I'm Zenith, an autonomous AI software engineer. In **{repo_name}**, I can read and search code, analyze project architecture, discover issues, run tests, and apply verified patches. Just tell me what you'd like to do!"
+            elif any(k in cleaned for k in ("thanks", "thank you", "ok", "okay", "cool", "nice", "awesome", "great", "sure", "got it")):
+                reply = f"You're welcome! Let me know if you want me to inspect code, run tests, or solve any issues in **{repo_name}**."
             else:
                 reply = f"I'm here in **{repo_name}** and ready to help. You can ask me to find bugs, inspect files, or run tests."
 
@@ -931,16 +982,8 @@ class ZenithREPL:
             self.session_active = False
             return
 
-        # 2. Conversational Queries & Greetings (dynamic via LLM)
-        conversational_triggers = [
-            "hi", "hello", "hey", "hola", "greetings", "yo", "howdy", "sup",
-            "what are you doing", "what r u doing", "what are u doing", "what you doing",
-            "what are you working on", "what is your status", "whats up", "what's up",
-            "who are you", "what are you", "what can you do", "tell me about yourself",
-            "how are you", "how are you doing", "how r u", "how do you work",
-            "thank you", "thanks", "ok", "okay", "cool", "nice", "awesome", "great",
-        ]
-        if cleaned in conversational_triggers or any(cleaned.startswith(f"{t} ") for t in ("hi", "hello", "hey", "yo")):
+        # 2. Conversational Queries, Greetings, Identity & Folder Questions (dynamic via LLM)
+        if self._is_conversational_or_informational(user_msg):
             await self.handle_conversational_message(user_msg)
             return
 
