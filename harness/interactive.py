@@ -74,9 +74,12 @@ You operate directly inside the repository at: {repo_path}
 
 CORE OPERATIONAL RULES:
 1. Strict Jailed Boundary: You are strictly jailed to {repo_path}. All file reads, writes, edits, and test runs must stay inside this repository.
-2. Autonomous Tool Calling:
-   - When inspecting files, editing code, or running tests, ALWAYS call the appropriate function tool.
-   - NEVER output pseudo-tool text such as "Invoked tool ... with args ..." or "Action: ...". Use native tool calls.
+2. Intent & Tool Calling:
+   - When the user is chatting, greeting you, or asking general/status questions (e.g. "what are you doing?", "what can you do?", "how does this work?"):
+     Respond directly, concisely, and naturally in markdown text. Do NOT call tools for conversational queries.
+   - When given an engineering task (inspecting, debugging, auditing, writing features, running tests):
+     Call the appropriate native function tools systematically.
+   - NEVER output pseudo-tool text such as "Invoked tool ... with args ..." or "Action: ...". Use native function calls.
    - Call get_skill(skill_name='...') if you need detailed instructions for an installed skill.
 3. Deep-Dive Engineering Discipline:
    - Understand the project's intended architecture, design, and behavior from its README, config, and source files.
@@ -84,10 +87,10 @@ CORE OPERATIONAL RULES:
    - Apply clean, idiomatic, minimal patches via apply_patch (or write_file).
    - Run tests or verification checks via run_test_suite to ensure 0 failures and complete regression safety.
 4. Transparency:
-   - Explain your rationale concisely before or after taking tool actions.
+   - Keep actions focused, purposeful, and quiet.
    - Synthesize your findings clearly when the task is verified.
 5. Autonomous Completion:
-   - Once you have gathered sufficient information, inspected the necessary files, or verified a fix, synthesize your final findings in clear markdown and conclude without calling further tools.
+   - Once you have gathered sufficient information, inspected the necessary files, or verified a fix, call emit_done_candidate or synthesize your final findings in clear markdown and conclude without calling further tools.
 
 {skills_block}
 """
@@ -625,6 +628,44 @@ class ZenithREPL:
 
     # ─── AUTONOMOUS TOOL EXECUTION LOOP ───────────────────────────────────────
 
+    def _format_tool_status_line(self, tc: ToolCall, tool_res: ToolResult) -> str:
+        """Format a clean, concise single-line tool status indicator like Claude Code."""
+        if tool_res.error_code == ErrorCode.LOOP_DETECTED:
+            return f"  [yellow]⚠️  Loop Prevention:[/] [dim]{tc.tool} already called with these args. Skipping repeat.[/dim]"
+
+        icon = "✅" if tool_res.status == ResultStatus.SUCCESS else "❌"
+
+        if tc.tool == "read_file_range":
+            fp = tc.args.get("file_path", "")
+            start = tc.args.get("start_line", 1)
+            end = tc.args.get("end_line", "")
+            return f"  {icon} [cyan]Read file:[/] [bold]{fp}[/bold] [dim](lines {start}-{end})[/dim]"
+        elif tc.tool == "search_code":
+            q = tc.args.get("query", "")
+            return f"  {icon} [cyan]Search code:[/] [bold]'{q}'[/bold]"
+        elif tc.tool == "list_dir":
+            p = tc.args.get("path", ".") or "."
+            return f"  {icon} [cyan]List dir:[/] [bold]{p}[/bold]"
+        elif tc.tool in ("run_test_suite", "run_bash_sandboxed"):
+            cmd_desc = tc.args.get("command", "pytest") if tc.tool == "run_bash_sandboxed" else "test suite"
+            exit_code_str = f"exit {tool_res.exit_code}" if tool_res.exit_code is not None else ""
+            return f"  {icon} [cyan]Run {cmd_desc}:[/] [dim]({exit_code_str})[/dim]"
+        elif tc.tool == "apply_patch":
+            tf = tc.args.get("target_file", "")
+            return f"  {icon} [green]Applied patch:[/] [bold]{tf}[/bold]"
+        elif tc.tool == "write_file":
+            fp = tc.args.get("file_path", "")
+            return f"  {icon} [green]Wrote file:[/] [bold]{fp}[/bold]"
+        elif tc.tool == "git_diff":
+            return f"  {icon} [cyan]Inspect git diff[/cyan]"
+        elif tc.tool == "get_symbol":
+            sym = tc.args.get("symbol_name", "")
+            return f"  {icon} [cyan]Get symbol:[/] [bold]{sym}[/bold]"
+        elif tc.tool == "emit_done_candidate":
+            return f"  {icon} [bold green]Emit done candidate (verification complete)[/bold green]"
+        else:
+            return f"  {icon} [cyan]{tc.tool}[/cyan] [dim]({tool_res.status.value})[/dim]"
+
     async def execute_autonomous_loop(self, initial_prompt: str) -> None:
         """Multi-turn autonomous execution loop with deduplication, loop prevention, and memory."""
         self.history.append({"role": "user", "content": initial_prompt})
@@ -690,17 +731,13 @@ class ZenithREPL:
                     if not tc.reasoning or not str(tc.reasoning).strip():
                         tc.reasoning = f"Execute {tc.tool}"
 
-                    console.print(f"  [cyan]🛠️  Tool Call:[/cyan] [bold]{tc.tool}[/bold] [dim]({tc.reasoning})[/dim]")
                     tool_res = self.tool_engine.execute(tc)
-
-                    # Process observation truncation through ContextManager
                     tool_res = self.context_manager.process_tool_result(tool_res)
+
+                    console.print(self._format_tool_status_line(tc, tool_res))
 
                     if tool_res.error_code == ErrorCode.LOOP_DETECTED:
                         loop_detections_in_a_row += 1
-                        stat_color = "yellow"
-                        stat_icon = "⚠️ "
-                        console.print(f"     [{stat_color}]{stat_icon} {tool_res.tool}:[/] [bold yellow]{tool_res.truncated_output}[/bold yellow]")
                         tool_feedback = (
                             f"Tool `{tc.tool}` blocked by Loop Prevention:\n{tool_res.truncated_output}\n"
                             f"You already executed this exact call. DO NOT repeat it. "
@@ -708,22 +745,28 @@ class ZenithREPL:
                         )
                     else:
                         loop_detections_in_a_row = 0
-                        if tool_res.status == ResultStatus.SUCCESS:
-                            stat_color = "green"
-                            stat_icon = "✅"
-                        else:
-                            stat_color = "red"
-                            stat_icon = "❌"
-
-                        preview = tool_res.truncated_output.strip()
-                        if len(preview) > 240:
-                            preview = preview[:240] + "..."
-                        console.print(f"     [{stat_color}]{stat_icon} {tool_res.tool}:[/] [dim]{preview}[/dim]")
-
                         tool_feedback = (
                             f"Tool `{tc.tool}` executed with status {tool_res.status.value}.\n"
                             f"Output:\n{tool_res.truncated_output}"
                         )
+
+                    # ── Handle emit_done_candidate early completion ──
+                    if tc.tool == "emit_done_candidate":
+                        turn_rec = TurnRecord(
+                            step=self.step_counter,
+                            tool=tc.tool,
+                            reasoning=tc.reasoning,
+                            args=tc.args,
+                            observation="DONE_CANDIDATE recorded",
+                            status=tool_res.status,
+                            exit_code=tool_res.exit_code,
+                        )
+                        self.context_manager.add_turn(turn_rec)
+                        self.history.append({"role": "model", "content": f"I executed tool `{tc.tool}` ({tc.reasoning})"})
+                        self.history.append({"role": "user", "content": "Done candidate accepted. Synthesize your final summary."})
+                        if self.active_plan and len(self.active_plan) > 3:
+                            self.active_plan[3]["status"] = "completed"
+                        break
 
                     # ── Update Working Memory based on tool executed ──
                     if tc.tool == "read_file_range":
@@ -824,22 +867,81 @@ class ZenithREPL:
 
     # ─── NATURAL LANGUAGE ROUTER ─────────────────────────────────────────────
 
+    async def handle_conversational_message(self, user_msg: str) -> None:
+        """Handle conversational chit-chat, greetings, and status inquiries dynamically via LLM."""
+        self.history.append({"role": "user", "content": user_msg})
+
+        profile = self.profile_repository()
+        repo_name = profile["name"]
+        stack = profile["stack"]
+        active_issue_str = f"Active task: {self.active_issue.primary_goal}" if self.active_issue else "No active task currently."
+        files_examined_list = list(self.context_manager.working_memory.files_examined.keys())
+        examined_str = f"Files inspected: {', '.join(files_examined_list)}" if files_examined_list else "No files inspected yet."
+
+        system_prompt = (
+            f"You are Zenith, an expert AI software engineering assistant (inspired by Claude Code).\n"
+            f"You are operating in repository '{repo_name}' ({stack}).\n"
+            f"Current state: {active_issue_str}. {examined_str}.\n\n"
+            f"CONVERSATIONAL GUIDELINES:\n"
+            f"- The user is chatting with you or asking a question (greeting, asking what you are doing, who you are, or general conversation).\n"
+            f"- Respond directly, concisely, and naturally as an intelligent engineering partner.\n"
+            f"- DO NOT call tools or emit tool JSON. Answer conversationally in markdown text.\n"
+            f"- If the user asks what you are doing, explain your current state in {repo_name}, mention what you can do (inspect code, diagnose bugs, run test suites, apply fixes), and invite them to give you a task or issue to work on.\n"
+            f"- Be conversational, helpful, and natural (avoid repetitive canned phrases)."
+        )
+
+        reply = ""
+        # If adapter has keys, call the LLM!
+        if self.adapter.key_pool and self.adapter.key_pool.total_keys > 0:
+            with console.status("[bold cyan]Zenith is thinking...[/bold cyan]", spinner="dots"):
+                try:
+                    response = await self.adapter.complete(
+                        system_prompt=system_prompt,
+                        user_message="",
+                        history=self.history,
+                        temperature=0.7,
+                    )
+                    if response.content and not response.content.startswith("[GEMINI_ERROR"):
+                        reply = response.content.strip()
+                except Exception:
+                    pass
+
+        # Fallback if no API key or API call failed
+        if not reply:
+            cleaned = user_msg.strip().lower()
+            if any(cleaned.startswith(g) for g in ("hi", "hello", "hey", "hola", "yo", "greetings", "howdy", "sup")):
+                reply = f"Hello! I'm Zenith, your AI engineering assistant in **{repo_name}**. What would you like to build, inspect, or fix in this project today?"
+            elif "what" in cleaned and ("doing" in cleaned or "working on" in cleaned or "status" in cleaned):
+                reply = f"I'm currently standing by in **{repo_name}** ({stack}). I'm ready to inspect code, diagnose bugs, run tests, or implement fixes. What task would you like to work on?"
+            elif "who" in cleaned or "what can you do" in cleaned or "help" in cleaned:
+                reply = f"I'm Zenith, an autonomous AI software engineer. In **{repo_name}**, I can read and search code, analyze project architecture, discover issues, run tests, and apply verified patches. Just tell me what you'd like to do!"
+            else:
+                reply = f"I'm here in **{repo_name}** and ready to help. You can ask me to find bugs, inspect files, or run tests."
+
+        console.print(f"\n[bold cyan]Zenith ❯[/bold cyan] {reply}\n")
+        self.history.append({"role": "model", "content": reply})
+
     async def process_user_message(self, user_msg: str) -> None:
         """Process natural language request or route to specialized engines."""
         cleaned = user_msg.strip().lower()
 
-        # 1. Casual Greetings
-        if cleaned in ("hi", "hello", "hey", "hola", "greetings", "yo"):
-            reply = "Hello! I'm Zenith, your AI engineering assistant. What would you like to build, inspect, or fix in this repository today?"
-            console.print(f"\n[bold cyan]Zenith ❯[/bold cyan] {reply}\n")
-            self.history.append({"role": "user", "content": user_msg})
-            self.history.append({"role": "model", "content": reply})
-            return
-
-        # 2. Exits
+        # 1. Exits
         if cleaned in ("bye", "goodbye", "cya", "exit", "quit"):
             console.print("\n[bold cyan]Zenith ❯[/bold cyan] Goodbye! Happy coding! 🚀\n")
             self.session_active = False
+            return
+
+        # 2. Conversational Queries & Greetings (dynamic via LLM)
+        conversational_triggers = [
+            "hi", "hello", "hey", "hola", "greetings", "yo", "howdy", "sup",
+            "what are you doing", "what r u doing", "what are u doing", "what you doing",
+            "what are you working on", "what is your status", "whats up", "what's up",
+            "who are you", "what are you", "what can you do", "tell me about yourself",
+            "how are you", "how are you doing", "how r u", "how do you work",
+            "thank you", "thanks", "ok", "okay", "cool", "nice", "awesome", "great",
+        ]
+        if cleaned in conversational_triggers or any(cleaned.startswith(f"{t} ") for t in ("hi", "hello", "hey", "yo")):
+            await self.handle_conversational_message(user_msg)
             return
 
         # 3. Deep Codebase Audit & Autonomous Investigation Triggers
