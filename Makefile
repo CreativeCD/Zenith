@@ -8,6 +8,10 @@ REPO_PATH ?= .
 ISSUE_PATH ?= issue.txt
 MODEL ?= gemini-2.5-flash
 MAX_STEPS ?= 25
+AI_API_KEY ?= $(shell echo $$AI_API_KEY)
+PROVIDER ?= $(shell echo $$PROVIDER)
+BASE_URL ?= $(shell echo $$BASE_URL)
+EXTRA_FLAGS ?=
 
 .PHONY: help setup run test clean lint docker-test
 
@@ -22,6 +26,7 @@ help:
 	@echo "  clean        - Remove virtualenv, caches, and test artifacts"
 
 setup:
+	@echo "Setting up environment..."
 	$(PYTHON) -m venv $(VENV)
 	$(BIN)/pip install --upgrade pip
 	$(BIN)/pip install -r requirements.txt
@@ -31,17 +36,23 @@ run:
 		echo "Virtual environment not found. Running setup..."; \
 		$(MAKE) setup; \
 	fi
-	$(BIN)/python -m harness.cli \
+	@echo "Starting Zenith AI Coding Harness..."
+	AI_API_KEY="$(AI_API_KEY)" $(BIN)/python -m harness.cli \
 		--repo "$(REPO_PATH)" \
 		--issue "$(ISSUE_PATH)" \
 		--model "$(MODEL)" \
-		--max-steps $(MAX_STEPS)
+		--max-steps $(MAX_STEPS) \
+		--trust \
+		$(if $(PROVIDER),--provider $(PROVIDER),) \
+		$(if $(BASE_URL),--base-url $(BASE_URL),) \
+		$(EXTRA_FLAGS)
 
 test:
+	@echo "Running tests..."
 	@if [ -d "$(VENV)" ]; then \
-		$(BIN)/pytest -v tests/ --cov=harness --cov-report=term-missing; \
+		AI_API_KEY="$(AI_API_KEY)" $(BIN)/pytest -v tests/ --cov=harness --cov-report=term-missing; \
 	else \
-		pytest -v tests/ --cov=harness --cov-report=term-missing; \
+		AI_API_KEY="$(AI_API_KEY)" pytest -v tests/ --cov=harness --cov-report=term-missing; \
 	fi
 
 lint:

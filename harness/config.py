@@ -320,14 +320,19 @@ def load_config(
         if key_env and os.environ.get(key_env):
             cfg.model.api_key = os.environ.get(key_env)
         elif provider == "deepseek":
-            cfg.model.api_key = os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("OPENAI_API_KEY")
+            cfg.model.api_key = (
+                os.environ.get("DEEPSEEK_API_KEY")
+                or os.environ.get("AI_API_KEY")
+                or os.environ.get("OPENAI_API_KEY")
+            )
         elif provider == "qwen":
             cfg.model.api_key = (
                 os.environ.get("DASHSCOPE_API_KEY")
                 or os.environ.get("QWEN_API_KEY")
+                or os.environ.get("AI_API_KEY")
                 or os.environ.get("OPENAI_API_KEY")
             )
         else:
-            cfg.model.api_key = os.environ.get("OPENAI_API_KEY")
+            cfg.model.api_key = os.environ.get("AI_API_KEY") or os.environ.get("OPENAI_API_KEY")
 
     return cfg
