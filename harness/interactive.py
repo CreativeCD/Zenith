@@ -66,26 +66,42 @@ except ImportError:
 console = Console()
 
 
-SYSTEM_REPL_PROMPT = """You are Zenith, an expert autonomous AI software engineer (inspired by Claude Code).
+SYSTEM_REPL_PROMPT = """You are Zenith, an expert autonomous AI software engineer (like Claude Code) operating directly in the terminal.
 You operate directly inside the repository at: {repo_path}
 
+ENVIRONMENT & REPOSITORY CONTEXT:
+- Repository: {repo_name}
+- Root Path: {repo_path}
+- Stack: {stack} (manifest: {manifest})
+- Test Runner: {test_runner}
+- Git Status: {git_summary}
+- Discovered Tasks/Issues: {issues_summary}
+- Active Goal: {active_goal_summary}
+
 CORE OPERATIONAL RULES:
-1. Strict Jailed Boundary: You are strictly jailed to {repo_path}. All file reads, writes, edits, and test runs must stay inside this repository.
-2. Intent & Tool Calling:
-   - When the user is chatting, greeting you, or asking general/status questions (e.g. "what are you doing?", "what can you do?", "how does this work?"):
-     Respond directly, concisely, and naturally in markdown text. Do NOT call tools for conversational queries.
-   - When given an engineering task (inspecting, debugging, auditing, writing features, running tests):
-     Call the appropriate native function tools systematically.
-   - NEVER output pseudo-tool text such as "Invoked tool ... with args ..." or "Action: ...". Use native function calls.
-   - Call get_skill(skill_name='...') if you need detailed instructions for an installed skill.
-3. Deep-Dive Engineering Discipline:
+1. Strict Jailed Boundary:
+   You are strictly jailed to {repo_path}. All file reads, writes, edits, and test runs must stay inside this repository.
+
+2. Real AI Engineer Persona (No Canned Chatbot Boilerplate):
+   - You are a real software engineer CLI tool, NOT a customer service chatbot.
+   - NEVER output canned pleasantries or robotic greetings (e.g., NEVER say "Hello! I'm Zenith, your expert autonomous AI software engineer... How can I help you today?"). That is strictly forbidden.
+   - Answer directly, factually, and technically.
+
+3. Repository Inquiries & Project Status:
+   - When the user asks about "project status", "status", "git status", repository structure, tests, files, bugs, or issues:
+     YOU MUST actively inspect the repository using your native tools (call `git_status`, `list_dir`, `run_test_suite`, `search_code`, or `read_file_range`) or synthesize a concise, factual status report based on the concrete repository context. Status inquiries are technical engineering tasks requiring real inspection.
+   - When given an engineering task (fixing bugs, debugging, auditing, writing features, running tests):
+     Systematically call native function tools. Investigate root causes, formulate plans, apply minimal patches with `apply_patch`, and verify with `run_test_suite`.
+   - Pure markdown text responses without tools are ONLY permitted for pure social pleasantries (e.g. "hi", "hey", "thanks") — keep them to one concise, direct sentence. Any prompt mentioning the project, code, tests, status, issues, bugs, or repo requires tools or concrete factual reporting.
+
+4. Deep-Dive Engineering Discipline:
    - Understand the project's intended architecture, design, and behavior from its README, config, and source files.
    - Investigate the root causes of any runtime crashes, logic loopholes, unhandled edge cases, or broken assumptions.
    - Apply clean, idiomatic, minimal patches via apply_patch (or write_file).
    - Run tests or verification checks via run_test_suite to ensure 0 failures and complete regression safety.
-4. Transparency:
-   - Keep actions focused, purposeful, and quiet.
-   - Synthesize your findings clearly when the task is verified.
+   - NEVER output pseudo-tool text such as "Invoked tool ... with args ..." or "Action: ...". Use native function calls.
+   - Call get_skill(skill_name='...') if you need detailed instructions for an installed skill.
+
 5. Autonomous Completion:
    - Once you have gathered sufficient information, inspected the necessary files, or verified a fix, call emit_done_candidate or synthesize your final findings in clear markdown and conclude without calling further tools.
 
@@ -166,15 +182,56 @@ class ZenithREPL:
             self.prompt_session = None
 
     def _build_system_prompt(self) -> str:
-        """Construct system prompt with jailed repo path and installed skills."""
+        """Construct system prompt with jailed repo path, live environment context, and installed skills."""
         skills_summary = self.skill_manager.format_skills_for_prompt()
         if skills_summary.strip():
             skills_block = f"INSTALLED SKILLS:\n{skills_summary}\nCall get_skill(skill_name='<name>') to load full instructions for any skill."
         else:
             skills_block = "No custom skills installed. You can install skills using /skills install <url_or_repo>."
 
+        profile = self.profile_repository()
+        repo_name = profile.get("name") or Path(self.repo_path).name
+        stack = profile.get("stack") or "General"
+        manifest = profile.get("manifest") or "None detected"
+        test_runner = profile.get("test_runner") or "None detected"
+
+        # Git status summary
+        try:
+            g_res = git_status(repo_root=self.repo_path)
+            if g_res.status == ResultStatus.SUCCESS:
+                raw = g_res.raw_output.strip()
+                if not raw or "Working tree clean" in raw:
+                    git_summary = "Working tree clean (HEAD)"
+                else:
+                    lines = [l.strip() for l in raw.splitlines() if l.strip()]
+                    git_summary = f"{len(lines)} modified/untracked file(s): {', '.join(lines[:4])}"
+            else:
+                git_summary = "Git repository detected"
+        except Exception:
+            git_summary = "Git status unavailable"
+
+        # Discovered tasks / issues
+        issues = self.discover_issues()
+        if issues:
+            issues_summary = f"{len(issues)} issue(s) available: " + ", ".join(lbl for lbl, _ in issues[:5])
+        else:
+            issues_summary = "No issue files discovered in repository"
+
+        # Active goal
+        if self.active_issue:
+            active_goal_summary = f"{self.active_issue.primary_goal} ({self.active_issue_label})"
+        else:
+            active_goal_summary = "No specific issue selected (ready for tasks or queries)"
+
         return SYSTEM_REPL_PROMPT.format(
             repo_path=self.repo_path,
+            repo_name=repo_name,
+            stack=stack,
+            manifest=manifest,
+            test_runner=test_runner,
+            git_summary=git_summary,
+            issues_summary=issues_summary,
+            active_goal_summary=active_goal_summary,
             skills_block=skills_block,
         )
 
@@ -212,7 +269,10 @@ class ZenithREPL:
             profile["test_runner"] = "npm test"
         elif any((root / f).exists() for f in ("pyproject.toml", "setup.py", "requirements.txt", "Pipfile")):
             profile["stack"] = "Python"
-            profile["manifest"] = "pyproject.toml" if (root / "pyproject.toml").exists() else "setup.py"
+            for mf in ("pyproject.toml", "setup.py", "requirements.txt", "Pipfile"):
+                if (root / mf).exists():
+                    profile["manifest"] = mf
+                    break
             profile["test_runner"] = "pytest"
         elif (root / "go.mod").exists():
             profile["stack"] = "Go"
@@ -357,6 +417,12 @@ class ZenithREPL:
             p = root / name
             if p.is_file() and p.stat().st_size > 0:
                 found.append((name, p))
+
+        # Glob root for issue and task patterns
+        for pattern in ("ISSUE*.md", "issue*.md", "TASK*.md", "task*.md", "BUG*.md", "bug*.md", "ISSUE*.txt", "issue*.txt"):
+            for f in sorted(root.glob(pattern)):
+                if f.is_file() and f.stat().st_size > 0 and (f.name, f) not in found:
+                    found.append((f.name, f))
 
         issue_dirs = ["issues", ".issues", "eval_issues", "tasks", ".tasks"]
         for dname in issue_dirs:
@@ -1044,9 +1110,30 @@ class ZenithREPL:
             ev_list = "\n".join(f"  • [green]✔[/green] {e}" for e in evidence)
             table.add_row("Evidence", ev_list)
 
-        console.print("")
-        console.print(Panel(table, title="[bold green]✨ Verification Milestone[/bold green]", border_style="green", box=box.ROUNDED))
-        console.print("")
+    def _is_chatbot_deflection(self, text: str, user_prompt: str) -> bool:
+        """Detect if the LLM emitted a generic chatbot deflection instead of answering an engineering query."""
+        p_clean = user_prompt.strip().lower()
+        casual_greetings = {"hi", "hello", "hey", "hola", "yo", "sup", "howdy", "greetings", "thanks", "thank you", "ok", "okay", "cool"}
+        if p_clean in casual_greetings:
+            return False
+        if any(id_phrase in p_clean for id_phrase in ("who are you", "what is your name", "your name", "ur name", "what are you", "what is zenith")):
+            return False
+
+        t_lower = text.lower()
+        deflection_phrases = (
+            "how can i help you",
+            "how may i assist you",
+            "whether you want to debug",
+            "what would you like to build",
+            "what task would you like to work on",
+            "just let me know!",
+            "ready to assist you",
+            "feel free to ask",
+            "i am zenith, your",
+            "i'm zenith, your",
+            "expert autonomous ai software engineer",
+        )
+        return any(phrase in t_lower for phrase in deflection_phrases)
 
     async def execute_autonomous_loop(self, initial_prompt: str) -> None:
         """Multi-turn autonomous execution loop with native function-calling history.
@@ -1335,6 +1422,20 @@ class ZenithREPL:
                     })
                     continue
 
+                # Guard 2: generic chatbot deflection when asked a technical/status question
+                if current_turn == 1 and self._is_chatbot_deflection(response.content, initial_prompt):
+                    console.print("[dim yellow]⚡ Directing agent to inspect repository status with tools...[/dim yellow]")
+                    self.history.append({"role": "model", "content": response.content})
+                    self.history.append({
+                        "role": "user",
+                        "content": (
+                            f"CORRECTION: Do not provide a generic greeting or ask how to help. The user explicitly asked: '{initial_prompt}'. "
+                            "Act as an autonomous software engineer now: call the appropriate tool (such as `git_status`, `list_dir`, "
+                            "`run_test_suite`, or `read_file_range`) or provide a direct, factual technical answer."
+                        ),
+                    })
+                    continue
+
                 console.print("\n[bold cyan]Zenith ❯[/bold cyan]")
                 md = Markdown(response.content)
                 console.print(md)
@@ -1495,17 +1596,17 @@ class ZenithREPL:
         if not reply:
             cleaned = user_msg.strip().lower()
             if any(cleaned.startswith(g) for g in ("hi", "hello", "hey", "hola", "yo", "greetings", "howdy", "sup")):
-                reply = f"Hello! I'm Zenith, your AI engineering assistant in **{repo_name}**. What would you like to build, inspect, or fix in this project today?"
+                reply = f"Hello! Operating in **{repo_name}** ({stack})."
             elif any(k in cleaned for k in ("name", "who are you", "what are you", "what can you do", "ur name", "your name")):
-                reply = f"I am Zenith, an expert autonomous AI software engineer. I'm operating in **{repo_name}** ({stack}). How can I help you today?"
+                reply = f"I am Zenith, an autonomous AI software engineer operating in **{repo_name}** ({stack})."
             elif any(k in cleaned for k in ("folder", "flolder", "directory", "repo", "project name", "where am i")):
-                reply = f"The folder name (or repository name) is **{repo_name}** (`{self.repo_path}`)."
+                reply = f"The repository is **{repo_name}** at `{self.repo_path}`."
             elif "what" in cleaned and ("doing" in cleaned or "working on" in cleaned or "status" in cleaned):
-                reply = f"I'm currently standing by in **{repo_name}** ({stack}). I'm ready to inspect code, diagnose bugs, run tests, or implement fixes. What task would you like to work on?"
+                reply = f"Standing by in **{repo_name}** ({stack}). {active_issue_str}"
             elif any(k in cleaned for k in ("thanks", "thank you", "ok", "okay", "cool", "nice", "awesome", "great", "sure", "got it")):
-                reply = f"You're welcome! Let me know if you want me to inspect code, run tests, or solve any issues in **{repo_name}**."
+                reply = "Understood."
             else:
-                reply = f"I'm here in **{repo_name}** and ready to help. You can ask me to find bugs, inspect files, or run tests."
+                reply = f"Operating in **{repo_name}** ({stack})."
 
         console.print(f"\n[bold cyan]Zenith ❯[/bold cyan] {reply}\n")
         self.history.append({"role": "model", "content": reply})

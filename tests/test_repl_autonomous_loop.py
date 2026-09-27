@@ -320,3 +320,105 @@ def test_format_tool_status_line(dummy_config):
     assert "passed cleanly" in line_test
 
 
+def test_system_prompt_includes_live_environment_grounding(dummy_config, tmp_path):
+    """System prompt must be grounded with real repo facts, stack, manifest, and git status."""
+    readme = tmp_path / "README.md"
+    readme.write_text("# Test Repo\nDocumentation.", encoding="utf-8")
+    reqs = tmp_path / "requirements.txt"
+    reqs.write_text("pytest\n", encoding="utf-8")
+    issues_dir = tmp_path / "issues"
+    issues_dir.mkdir()
+    (issues_dir / "ISSUE_01_easy.md").write_text("# Easy bug", encoding="utf-8")
+
+    repl = ZenithREPL(config=dummy_config)
+    prompt = repl._build_system_prompt()
+
+    assert f"Repository: {tmp_path.name}" in prompt
+    assert f"Root Path: {tmp_path.resolve()}" in prompt
+    assert "Python" in prompt
+    assert "requirements.txt" in prompt
+    assert "pytest" in prompt
+    assert "issues/ISSUE_01_easy.md" in prompt
+    assert "No Canned Chatbot Boilerplate" in prompt
+
+
+def test_is_chatbot_deflection_logic(dummy_config):
+    """Verify deflection detection separates genuine greetings from lazy chatbot deflections."""
+    repl = ZenithREPL(config=dummy_config)
+
+    # Casual greeting / identity queries should NOT be flagged as deflection
+    assert repl._is_chatbot_deflection("Hello! How can I help you?", "hi") is False
+    assert repl._is_chatbot_deflection("I am Zenith, your AI assistant.", "who are you") is False
+    assert repl._is_chatbot_deflection("Understood, standing by.", "thanks") is False
+
+    # Technical or project status requests receiving a canned chatbot greeting MUST be flagged
+    assert repl._is_chatbot_deflection(
+        "Hello! I'm Zenith, your expert autonomous AI software engineer. How can I help you today?",
+        "project status"
+    ) is True
+    assert repl._is_chatbot_deflection(
+        "I'm currently inspecting the repository. Whether you want to debug an issue, add a feature, or run tests, just let me know!",
+        "what are the bugs?"
+    ) is True
+    assert repl._is_chatbot_deflection(
+        "What would you like to build or fix in this project today?",
+        "run tests"
+    ) is True
+
+    # Real technical answers to project status should NOT be flagged
+    assert repl._is_chatbot_deflection(
+        "### Project Status\nOn branch main. All 14 tests passing. 1 file modified.",
+        "project status"
+    ) is False
+
+
+def test_autonomous_loop_corrects_chatbot_deflection(dummy_config):
+    """When a model gives a canned greeting on an engineering prompt, loop nudges it to call tools."""
+    repl = ZenithREPL(config=dummy_config)
+
+    # Turn 1: model deflects with canned greeting
+    # Turn 2: model calls git_status
+    # Turn 3: model synthesizes final answer
+    responses = [
+        ModelResponse(
+            content="Hello! I'm Zenith, your expert autonomous AI software engineer. How can I help you today?",
+            tool_calls=[],
+            tokens_in=10,
+            tokens_out=25,
+        ),
+        ModelResponse(
+            content="",
+            tool_calls=[ToolCall(tool="git_status", reasoning="Checking working tree", args={})],
+            tokens_in=30,
+            tokens_out=15,
+        ),
+        ModelResponse(
+            content="### Repository Status\nBranch: main. Working tree clean.",
+            tool_calls=[],
+            tokens_in=45,
+            tokens_out=20,
+        ),
+    ]
+    repl.adapter.complete = AsyncMock(side_effect=responses)
+    repl.tool_engine.execute = MagicMock(return_value=ToolResult(
+        tool="git_status",
+        args_hash="123",
+        status=ResultStatus.SUCCESS,
+        raw_output="Working tree clean",
+        truncated_output="Working tree clean",
+    ))
+
+    asyncio.run(repl.execute_autonomous_loop("project status"))
+
+    # Turn 1 correction turn was appended
+    user_nudges = [h for h in repl.history if h.get("role") == "user" and "CORRECTION: Do not provide a generic greeting" in str(h.get("content"))]
+    assert len(user_nudges) == 1
+    # Tool was invoked
+    tool_turns = [h for h in repl.history if h.get("role") == "model" and h.get("tool_calls")]
+    assert len(tool_turns) == 1
+    assert tool_turns[0]["tool_calls"][0].tool == "git_status"
+    # Final answer reached
+    assert "Repository Status" in repl.history[-1]["content"]
+
+
+
