@@ -37,7 +37,7 @@ run:
 		$(MAKE) setup; \
 	fi
 	@echo "Starting Zenith AI Coding Harness..."
-	AI_API_KEY="$(AI_API_KEY)" $(BIN)/python -m harness.cli \
+	$(if $(AI_API_KEY),AI_API_KEY="$(AI_API_KEY)",) $(BIN)/python -m harness.cli \
 		--repo "$(REPO_PATH)" \
 		--issue "$(ISSUE_PATH)" \
 		--model "$(MODEL)" \
@@ -50,9 +50,9 @@ run:
 test:
 	@echo "Running tests..."
 	@if [ -d "$(VENV)" ]; then \
-		AI_API_KEY="$(AI_API_KEY)" $(BIN)/pytest -v tests/ --cov=harness --cov-report=term-missing; \
+		$(if $(AI_API_KEY),AI_API_KEY="$(AI_API_KEY)",) $(BIN)/pytest -v tests/ --cov=harness --cov-report=term-missing; \
 	else \
-		AI_API_KEY="$(AI_API_KEY)" pytest -v tests/ --cov=harness --cov-report=term-missing; \
+		$(if $(AI_API_KEY),AI_API_KEY="$(AI_API_KEY)",) pytest -v tests/ --cov=harness --cov-report=term-missing; \
 	fi
 
 lint:
