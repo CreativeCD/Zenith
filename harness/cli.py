@@ -38,8 +38,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-steps",
         type=int,
-        default=25,
-        help="Maximum agent turns before halting",
+        default=None,
+        help="Maximum agent turns before halting (default: uses harness_config.yaml setting)",
     )
     parser.add_argument(
         "--model",
@@ -50,21 +50,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--temperature",
         type=float,
-        default=0.0,
-        help="Sampling temperature for action turns",
+        default=None,
+        help="Sampling temperature for plan/action turns (default: uses harness_config.yaml setting)",
     )
     parser.add_argument(
         "--token-budget",
         type=int,
-        default=32000,
-        help="Total context window token budget",
+        default=None,
+        help="Total context window token budget (default: uses harness_config.yaml setting)",
     )
     parser.add_argument(
         "--agent-mode",
         type=str,
         choices=["auto", "single", "multi"],
-        default="auto",
-        help="Agent mode: auto-select by complexity, single ReAct agent, or full multi-agent pool",
+        default=None,
+        help="Agent mode: auto-select by complexity, single ReAct agent, or full multi-agent pool (default: uses harness_config.yaml setting)",
     )
     parser.add_argument(
         "-v",
@@ -91,8 +91,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output-dir",
         type=str,
-        default=".harness",
-        help="Directory to write telemetry, diffs, and execution report",
+        default=None,
+        help="Directory to write telemetry, diffs, and execution report (default: uses harness_config.yaml setting)",
     )
     parser.add_argument(
         "--config",
@@ -209,8 +209,8 @@ def main(args_list: list[str] | None = None) -> int:
         from harness.issue_parser import IssueParser
         from harness.repo_intel import RepoIndexBuilder, SemanticRanker
 
-        parser = IssueParser(config=config)
-        plan = parser.parse_issue(issue_content, repo_path=config.repo_path)
+        issue_parser = IssueParser(config=config)
+        plan = issue_parser.parse_issue(issue_content, repo_path=config.repo_path)
 
         builder = RepoIndexBuilder(
             repo_path=config.repo_path,

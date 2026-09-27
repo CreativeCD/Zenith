@@ -37,6 +37,7 @@ from harness.contracts import (
     VerificationResult,
 )
 from harness.telemetry import TelemetryWriter
+from harness.tools.security import sanitized_env
 
 
 class VerificationGate:
@@ -354,7 +355,7 @@ class VerificationGate:
 
         # Construct test command
         cmd = self._build_test_command(repo_path, test_filter, issue_plan)
-        env = {**os.environ, "PYTHONPATH": f"{repo_path}:{os.environ.get('PYTHONPATH', '')}"}
+        env = sanitized_env({"PYTHONPATH": f"{repo_path}:{os.environ.get('PYTHONPATH', '')}"})
 
         try:
             proc = subprocess.run(
@@ -405,7 +406,7 @@ class VerificationGate:
         test_runner = self._resolve_python_test_runner(repo_path)
         cmd = test_runner + ["-q"]
 
-        env = {**os.environ, "PYTHONPATH": f"{repo_path}:{os.environ.get('PYTHONPATH', '')}"}
+        env = sanitized_env({"PYTHONPATH": f"{repo_path}:{os.environ.get('PYTHONPATH', '')}"})
         try:
             proc = subprocess.run(
                 cmd,
@@ -587,7 +588,7 @@ class VerificationGate:
                 "    sys.exit(42)\n"
             )
 
-            env = {**os.environ, "PYTHONPATH": f"{repo_path}:{os.environ.get('PYTHONPATH', '')}"}
+            env = sanitized_env({"PYTHONPATH": f"{repo_path}:{os.environ.get('PYTHONPATH', '')}"})
             try:
                 proc = subprocess.run(
                     [python_bin, "-c", script],

@@ -38,6 +38,13 @@ context:
   observation_mid_threshold: 300     # Lines: switch from no-trunc to head/tail mode
   kv_cache_enabled: true             # Keep PERSONA+GOAL byte-identical for cache reuse
 
+prompt_compression:                    # Zenith speciality: compress verbose user prompts
+  enabled: true                        # before they enter model context (Ponytail-inspired)
+  char_threshold: 400                  # Prompts shorter than this are never touched
+  use_llm: true                        # LLM rewrite for very long prompts (anchor-validated)
+  llm_char_threshold: 2500             # Only LLM-compress prompts longer than this
+  min_savings_ratio: 0.05              # Discard compression that saves less than 5%
+
 agent:
   max_steps: 15                      # Free tier: keep under 20 req/day limit. Override: --max-steps 25
   max_plan_revisions: 3

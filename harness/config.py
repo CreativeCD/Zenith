@@ -66,6 +66,16 @@ class ContextConfig:
 
 
 @dataclass
+class PromptCompressionConfig:
+    """Built-in user prompt compression (Zenith speciality, Ponytail-inspired)."""
+    enabled: bool = True
+    char_threshold: int = 400
+    use_llm: bool = True
+    llm_char_threshold: int = 2500
+    min_savings_ratio: float = 0.05
+
+
+@dataclass
 class AgentConfig:
     max_steps: int = 25
     max_plan_revisions: int = 3
@@ -140,6 +150,7 @@ class HarnessConfig:
     trust: bool = False
     model: ModelConfig = field(default_factory=ModelConfig)
     context: ContextConfig = field(default_factory=ContextConfig)
+    prompt_compression: PromptCompressionConfig = field(default_factory=PromptCompressionConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
     tools: ToolsConfig = field(default_factory=ToolsConfig)
     external_skills: ExternalSkillsConfig = field(default_factory=ExternalSkillsConfig)
@@ -191,6 +202,11 @@ def load_config(
             for k, v in raw["context"].items():
                 if hasattr(cfg.context, k):
                     setattr(cfg.context, k, v)
+
+        if "prompt_compression" in raw:
+            for k, v in raw["prompt_compression"].items():
+                if hasattr(cfg.prompt_compression, k):
+                    setattr(cfg.prompt_compression, k, v)
 
         if "agent" in raw:
             for k, v in raw["agent"].items():

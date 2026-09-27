@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
 import time
 from typing import Any
@@ -67,6 +66,7 @@ class GeminiAdapter:
         self.base_url = base_url
         self.max_continuations = max_continuations
         self._clients: dict[str, Any] = {}
+        self.total_cached_tokens = 0
 
     def _get_client(self, api_key: str | None = None):
         """Get or create a cached google-genai Client for a specific key."""
@@ -86,9 +86,17 @@ class GeminiAdapter:
         """Backward-compatible property for existing tests/references."""
         return self._get_client()
 
-    def _compute_cost(self, model: str, tokens_in: int, tokens_out: int) -> float:
+    def _compute_cost(self, model: str, tokens_in: int, tokens_out: int, tokens_cached: int = 0) -> float:
         pricing = self.PRICING.get(model, self.PRICING.get("gemini-3.5-flash", {"input": 0.075, "output": 0.30}))
-        return (tokens_in / 1_000_000) * pricing["input"] + (tokens_out / 1_000_000) * pricing["output"]
+        # Cached prompt tokens are billed at 25% of the input rate (Gemini
+        # implicit caching discount); don't overstate cost by ignoring them.
+        cached = min(tokens_cached, tokens_in)
+        uncached = tokens_in - cached
+        return (
+            (uncached / 1_000_000) * pricing["input"]
+            + (cached / 1_000_000) * pricing["input"] * 0.25
+            + (tokens_out / 1_000_000) * pricing["output"]
+        )
 
     def _get_thinking_config(self, effort: str, model_name: str) -> Any | None:
         """Map reasoning_effort to types.ThinkingConfig, taking model capabilities into account."""
@@ -303,7 +311,7 @@ class GeminiAdapter:
                             contents=contents,
                             config=generate_config,
                         ),
-                        timeout=30.0,
+                        timeout=120.0,
                     )
                     latency_ms = int((time.perf_counter() - start_time) * 1000)
 
@@ -325,10 +333,13 @@ class GeminiAdapter:
                         if tool_calls:
                             content_text = ""
 
-                    tokens_in = tokens_out = 0
+                    tokens_in = tokens_out = tokens_cached = 0
                     if response.usage_metadata:
                         tokens_in = response.usage_metadata.prompt_token_count or 0
                         tokens_out = response.usage_metadata.candidates_token_count or 0
+                        cached_raw = getattr(response.usage_metadata, "cached_content_token_count", 0)
+                        tokens_cached = cached_raw if isinstance(cached_raw, int) else 0
+                    self.total_cached_tokens += tokens_cached
 
                     finish_reason = "stop"
                     if response.candidates and response.candidates[0].finish_reason:
@@ -389,16 +400,17 @@ class GeminiAdapter:
                         if tool_calls:
                             content_text = ""
 
-                    cost_usd = self._compute_cost(current_model, tokens_in, tokens_out)
+                    cost_usd = self._compute_cost(current_model, tokens_in, tokens_out, tokens_cached)
                     logger.debug(
-                        "Gemini %s (key #%d) | in=%d out=%d cost=$%.4f latency=%dms",
-                        current_model, active_idx + 1, tokens_in, tokens_out, cost_usd, latency_ms,
+                        "Gemini %s (key #%d) | in=%d out=%d cached=%d cost=$%.4f latency=%dms",
+                        current_model, active_idx + 1, tokens_in, tokens_out, tokens_cached, cost_usd, latency_ms,
                     )
                     return ModelResponse(
                         content=content_text,
                         tool_calls=tool_calls,
                         tokens_in=tokens_in,
                         tokens_out=tokens_out,
+                        tokens_cached=tokens_cached,
                         latency_ms=latency_ms,
                         model=current_model,
                         finish_reason=finish_reason,
@@ -421,6 +433,9 @@ class GeminiAdapter:
                     last_exc = exc
                     exc_str = str(exc)
                     is_rate_limit = any(x in exc_str for x in ("429", "503", "UNAVAILABLE", "RESOURCE_EXHAUSTED"))
+                    # Transient server-side failures deserve the same key/model
+                    # rotation as rate limits instead of aborting the cascade.
+                    is_server_error = any(x in exc_str for x in ("500", "INTERNAL", "DEADLINE_EXCEEDED"))
                     is_auth_error = any(x in exc_str for x in ("401", "403", "API_KEY_INVALID", "PERMISSION_DENIED"))
 
                     if is_auth_error:
@@ -428,7 +443,7 @@ class GeminiAdapter:
                         print(f"  ⚠️ Key #{active_idx + 1} authentication error. Cooling down 5m. Switching key...", flush=True)
                         continue
 
-                    if is_rate_limit:
+                    if is_rate_limit or is_server_error:
                         suggested_delay = key_pool.parse_retry_delay(exc_str)
                         cd_sec = key_pool.mark_rate_limited(active_key, suggested_delay)
                         print(

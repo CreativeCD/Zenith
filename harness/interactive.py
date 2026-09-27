@@ -18,11 +18,8 @@ import asyncio
 import json
 import os
 import re
-import shlex
-import sys
-import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -37,25 +34,21 @@ from harness.context_manager import (
     TurnRecord,
     count_tokens,
     format_working_memory,
-    truncate_observation,
 )
 from harness.contracts import (
-    Complexity,
     ErrorCode,
     IssuePlan,
     ResultStatus,
-    SuspectedFile,
-    TaskType,
     ToolCall,
     ToolResult,
 )
 from harness.issue_parser import IssueParser
+from harness.prompt_compressor import PromptCompressor
 from harness.repo_intel import RepoIndexBuilder
 from harness.semantic_compressor import SemanticCompressor
-from harness.skills.manager import SkillDefinition, SkillManager
+from harness.skills.manager import SkillManager
 from harness.tool_engine import ToolEngine
 from harness.tools.executor import run_test_suite
-from harness.tools.navigation import list_dir, search_code
 from harness.tools.vcs import git_diff, git_rollback, git_status
 
 try:
@@ -115,6 +108,15 @@ class ZenithREPL:
             key_pool=None,
         )
         self.context_manager.adapter = self.adapter
+        pc_cfg = getattr(config, "prompt_compression", None)
+        self.prompt_compressor = PromptCompressor(
+            enabled=getattr(pc_cfg, "enabled", True),
+            char_threshold=getattr(pc_cfg, "char_threshold", 400),
+            use_llm=getattr(pc_cfg, "use_llm", True),
+            llm_char_threshold=getattr(pc_cfg, "llm_char_threshold", 2500),
+            min_savings_ratio=getattr(pc_cfg, "min_savings_ratio", 0.05),
+            model_adapter=self.adapter,
+        )
         self.tool_engine = ToolEngine(
             repo_root=self.repo_path,
             skill_manager=self.skill_manager,
@@ -702,18 +704,20 @@ class ZenithREPL:
             if directives:
                 wm_text += "\n\n### ACTIVE EXECUTION DIRECTIVES\n" + "\n".join(directives)
 
-            full_system_prompt = f"{system_prompt}\n\n{wm_text}"
+            # The system prompt must stay byte-identical across turns so the
+            # provider's implicit prefix cache can hit. Volatile working
+            # memory + directives ride as the trailing user turn instead.
 
             # 3. Context token budget check & snapshot
-            total_prompt_tokens = count_tokens(full_system_prompt) + sum(count_tokens(str(m.get("content", ""))) for m in self.history)
+            total_prompt_tokens = count_tokens(system_prompt) + sum(count_tokens(str(m.get("content", ""))) for m in self.history)
             if self.context_manager.budget_manager.is_compression_needed(total_prompt_tokens):
                 self.context_manager.summarizer.write_snapshot(self.context_manager.working_memory)
                 self.history, _ = self.semantic_compressor.compact_history(self.history, keep_recent_pairs=2)
 
             with console.status(f"[bold cyan]🧠 Step {current_turn}/{max_turns}: Thinking & inspecting...[/bold cyan]", spinner="dots"):
                 response = await self.adapter.complete(
-                    system_prompt=full_system_prompt,
-                    user_message="",
+                    system_prompt=system_prompt,
+                    user_message=wm_text,
                     history=self.history,
                     tools=self.tool_definitions,
                     temperature=0.1,
@@ -834,7 +838,11 @@ class ZenithREPL:
 
                     # Append to conversational history for next turn
                     self.history.append({"role": "model", "content": f"I executed tool `{tc.tool}` ({tc.reasoning})"})
-                    self.history.append({"role": "user", "content": f"Observation from `{tc.tool}`:\n{tool_feedback}"})
+                    try:
+                        obs_args = json.dumps(tc.args or {}, default=str, separators=(",", ":"))[:300]
+                    except (TypeError, ValueError):
+                        obs_args = "{}"
+                    self.history.append({"role": "user", "content": f"Observation from `{tc.tool}` args={obs_args}:\n{tool_feedback}"})
 
                 # If model hit 3 consecutive loop detections, force termination with summary
                 if loop_detections_in_a_row >= 3:
@@ -982,6 +990,18 @@ class ZenithREPL:
             self.session_active = False
             return
 
+        # 1b. Zenith speciality: compress verbose user prompts before they
+        # enter history/context. Anchors (code, paths, URLs, errors) survive
+        # verbatim; only filler, noise, and duplication are removed.
+        comp = await self.prompt_compressor.compress_async(user_msg)
+        if comp.method != "none":
+            console.print(
+                f"[dim]⚡ prompt compressed: {len(comp.original):,} → {len(comp.compressed):,} chars "
+                f"(~{comp.tokens_saved:,} tokens saved, via {comp.method})[/dim]"
+            )
+            user_msg = comp.compressed
+            cleaned = user_msg.strip().lower()
+
         # 2. Conversational Queries, Greetings, Identity & Folder Questions (dynamic via LLM)
         if self._is_conversational_or_informational(user_msg):
             await self.handle_conversational_message(user_msg)
@@ -1041,6 +1061,10 @@ class ZenithREPL:
             env_path = zenith_env_dir / ".env"
             with open(env_path, "a", encoding="utf-8") as f:
                 f.write(f"\nAI_API_KEY={key_input}\n")
+            try:
+                os.chmod(env_path, 0o600)
+            except OSError:
+                pass
             os.environ["AI_API_KEY"] = key_input
 
             from harness.adapters.key_pool import KeyPoolManager
@@ -1059,10 +1083,10 @@ class ZenithREPL:
         if not trust_mgr.request_trust(self.repo_path, auto_trust=auto_trust):
             return
 
-        self.print_welcome_banner()
-
         if not self._ensure_api_key():
             return
+
+        self.print_welcome_banner()
 
         while self.session_active:
             try:
@@ -1090,7 +1114,7 @@ class ZenithREPL:
                     continue
 
                 if cmd_lower == "/clear":
-                    os.system("clear")
+                    os.system("cls" if os.name == "nt" else "clear")
                     self.print_welcome_banner()
                     continue
 

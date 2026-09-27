@@ -12,6 +12,7 @@ Inspired by Ponytail (semantic LLM prompt & context compression):
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -255,15 +256,26 @@ class SemanticCompressor:
                 content = msg.get("content", "")
                 original_len = len(content)
 
-                # Extract tool name from header: "Observation from `{tool}`:\n..."
-                match = re.search(r"Observation from `(\w+)`:\n(.*)", content, re.DOTALL)
-                if match:
-                    tool_name = match.group(1)
-                    raw_body = match.group(2)
+                # Header formats:
+                #   "Observation from `{tool}` args={json}:\n..."  (current)
+                #   "Observation from `{tool}`:\n..."              (legacy)
+                first_line, sep, body = content.partition("\n")
+                header_match = re.match(
+                    r"Observation from `(\w+)`(?: args=(\{.*\}))?:$", first_line
+                )
+                if header_match and sep:
+                    tool_name = header_match.group(1)
+                    raw_args = header_match.group(2)
+                    try:
+                        parsed_args = json.loads(raw_args) if raw_args else {}
+                        if not isinstance(parsed_args, dict):
+                            parsed_args = {}
+                    except (ValueError, TypeError):
+                        parsed_args = {}
                     compact_body = self.compress_observation(
                         tool=tool_name,
-                        args={},
-                        raw_output=raw_body,
+                        args=parsed_args,
+                        raw_output=body,
                         age_in_turns=age,
                     )
                     new_content = f"Observation from `{tool_name}` (compacted):\n{compact_body}"

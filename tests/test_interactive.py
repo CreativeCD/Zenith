@@ -2,11 +2,10 @@
 
 import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from harness.config import HarnessConfig
-from harness.contracts import Complexity, IssuePlan, ResultStatus, TaskType, ToolCall, ToolResult
+from harness.contracts import IssuePlan
 from harness.interactive import ZenithREPL
 from harness.skills.manager import SkillDefinition
 

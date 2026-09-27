@@ -10,7 +10,6 @@ graceful degradation chain specified in PRD §4.8 and architecture.md §13:
 
 import hashlib
 import json
-import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
