@@ -1,9 +1,8 @@
 """Unit tests for harness/skills/manager.py."""
 
-from pathlib import Path
 import pytest
 
-from harness.skills.manager import SkillDefinition, SkillManager
+from harness.skills.manager import SkillManager
 
 
 @pytest.fixture

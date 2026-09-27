@@ -43,7 +43,7 @@ class ModelConfig:
     api_key: str | None = field(default=None, repr=False)
     api_keys: list[str] = field(default_factory=list, repr=False)
     fallback_chain: list[str] = field(
-        default_factory=lambda: ["gemini-3.5-flash", "gemini-3.5-flash-lite"]
+        default_factory=lambda: ["gemini-3.5-flash", "gemini-3.6-flash"]
     )
     reasoning_effort_plan: str = "high"
     reasoning_effort_act: str = "low"
@@ -67,6 +67,16 @@ class ContextConfig:
     observation_tail_lines: int = 50
     observation_mid_threshold: int = 300
     kv_cache_enabled: bool = True
+
+
+@dataclass
+class PromptCompressionConfig:
+    """Built-in user prompt compression (Zenith speciality, Ponytail-inspired)."""
+    enabled: bool = True
+    char_threshold: int = 400
+    use_llm: bool = True
+    llm_char_threshold: int = 2500
+    min_savings_ratio: float = 0.05
 
 
 @dataclass
@@ -144,6 +154,7 @@ class HarnessConfig:
     trust: bool = False
     model: ModelConfig = field(default_factory=ModelConfig)
     context: ContextConfig = field(default_factory=ContextConfig)
+    prompt_compression: PromptCompressionConfig = field(default_factory=PromptCompressionConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
     tools: ToolsConfig = field(default_factory=ToolsConfig)
     external_skills: ExternalSkillsConfig = field(default_factory=ExternalSkillsConfig)
@@ -153,48 +164,73 @@ class HarnessConfig:
 
     def validate(self) -> None:
         """Validate paths, boundaries, and required environment credentials."""
-        # API Key check (unless dry_run)
+        # API Key check across all supported providers (unless dry_run)
         if not self.dry_run and not self.model.api_keys and not self.model.api_key:
-            provider = (self.model.provider or "gemini").lower()
-            if provider == "gemini":
+            provider = (self.model.provider or "").lower()
+            from harness.adapters.multi_provider import discover_provider_keys
+            discovered = discover_provider_keys()
+
+            if provider in ("gemini", "auto", ""):
                 from harness.adapters.key_pool import KeyPoolManager
                 env_keys = KeyPoolManager._load_keys_from_env()
-                if not env_keys:
-                    raise OSError(
-                        "AI_API_KEY environment variable is not set or empty. "
-                        "Define AI_API_KEY in your environment or .env file."
+                if env_keys:
+                    self.model.api_keys = env_keys
+                    self.model.api_key = env_keys[0]
+                elif os.environ.get("AI_API_KEY"):
+                    self.model.api_keys = [os.environ["AI_API_KEY"]]
+                    self.model.api_key = os.environ["AI_API_KEY"]
+                else:
+                    active_keys = (
+                        discovered.get("gemini")
+                        or discovered.get("deepseek")
+                        or discovered.get("openai")
+                        or []
                     )
-                self.model.api_keys = env_keys
-                self.model.api_key = env_keys[0]
-            else:
+                    if not active_keys:
+                        raise OSError(
+                            "No API key configured for any supported provider. "
+                            "Set DEEPSEEK_API_KEY (DeepSeek), AI_API_KEY (Gemini), or OPENAI_API_KEY (OpenAI) "
+                            "in your environment or .env file."
+                        )
+                    self.model.api_keys = active_keys
+                    self.model.api_key = active_keys[0]
+
+                    if not discovered.get("gemini") and discovered.get("deepseek") and self.model.name.startswith("gemini"):
+                        self.model.name = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+                    elif not discovered.get("gemini") and discovered.get("openai") and self.model.name.startswith("gemini"):
+                        self.model.name = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+            elif provider:
                 key_env = self.model.api_key_env
                 resolved_key = os.environ.get(key_env) if key_env else None
                 hint_env = key_env or "API_KEY"
 
                 if not resolved_key:
                     if provider == "deepseek":
-                        resolved_key = os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("OPENAI_API_KEY")
+                        resolved_key = os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("AI_API_KEY") or os.environ.get("OPENAI_API_KEY")
                         hint_env = key_env or "DEEPSEEK_API_KEY"
                     elif provider == "qwen":
                         resolved_key = (
                             os.environ.get("DASHSCOPE_API_KEY")
                             or os.environ.get("QWEN_API_KEY")
+                            or os.environ.get("AI_API_KEY")
                             or os.environ.get("OPENAI_API_KEY")
                         )
                         hint_env = key_env or "DASHSCOPE_API_KEY (or QWEN_API_KEY)"
                     else:
-                        resolved_key = os.environ.get("OPENAI_API_KEY")
+                        resolved_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("AI_API_KEY")
                         hint_env = key_env or "OPENAI_API_KEY"
 
-                if not resolved_key:
+                if resolved_key:
+                    self.model.api_key = resolved_key
+                    self.model.api_keys = [resolved_key]
+                else:
                     raise OSError(
                         f"API key for provider '{provider}' not found. "
                         f"Please set {hint_env} in your environment or configure model.api_key_env."
                     )
-                self.model.api_key = resolved_key
 
         # Check required base_url for providers that lack a safe universal default
-        provider = (self.model.provider or "gemini").lower()
+        provider = (self.model.provider or "").lower()
         if provider == "qwen" and not self.model.base_url and not os.environ.get("DASHSCOPE_API_KEY"):
             raise ValueError(
                 "base_url is required for provider 'qwen' (e.g. 'https://dashscope.aliyuncs.com/compatible-mode/v1' "
@@ -231,6 +267,11 @@ def load_config(
             for k, v in raw["context"].items():
                 if hasattr(cfg.context, k):
                     setattr(cfg.context, k, v)
+
+        if "prompt_compression" in raw:
+            for k, v in raw["prompt_compression"].items():
+                if hasattr(cfg.prompt_compression, k):
+                    setattr(cfg.prompt_compression, k, v)
 
         if "agent" in raw:
             for k, v in raw["agent"].items():
@@ -305,17 +346,21 @@ def load_config(
         if repo_env.exists():
             load_dotenv(repo_env)
 
-    # Load API Keys from environment if present based on provider
-    provider = (cfg.model.provider or "gemini").lower()
-    if provider == "gemini":
+    # Load API Keys from environment if present based on provider or discovery
+    provider = (cfg.model.provider or "").lower()
+    from harness.adapters.multi_provider import discover_provider_keys
+    discovered = discover_provider_keys()
+
+    if provider == "gemini" or (not provider and discovered.get("gemini")):
         from harness.adapters.key_pool import KeyPoolManager
         env_keys = KeyPoolManager._load_keys_from_env()
         if env_keys:
             cfg.model.api_keys = env_keys
             cfg.model.api_key = env_keys[0]
-        else:
-            cfg.model.api_key = os.environ.get("AI_API_KEY")
-    else:
+        elif os.environ.get("AI_API_KEY"):
+            cfg.model.api_keys = [os.environ["AI_API_KEY"]]
+            cfg.model.api_key = os.environ["AI_API_KEY"]
+    elif provider:
         key_env = cfg.model.api_key_env
         if key_env and os.environ.get(key_env):
             cfg.model.api_key = os.environ.get(key_env)
@@ -334,5 +379,21 @@ def load_config(
             )
         else:
             cfg.model.api_key = os.environ.get("AI_API_KEY") or os.environ.get("OPENAI_API_KEY")
+        if cfg.model.api_key:
+            cfg.model.api_keys = [cfg.model.api_key]
+    else:
+        active_keys = (
+            discovered.get("gemini")
+            or discovered.get("deepseek")
+            or discovered.get("openai")
+            or []
+        )
+        if active_keys:
+            cfg.model.api_keys = active_keys
+            cfg.model.api_key = active_keys[0]
+            if not discovered.get("gemini") and discovered.get("deepseek") and cfg.model.name.startswith("gemini"):
+                cfg.model.name = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+            elif not discovered.get("gemini") and discovered.get("openai") and cfg.model.name.startswith("gemini"):
+                cfg.model.name = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 
     return cfg

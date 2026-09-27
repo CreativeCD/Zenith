@@ -215,8 +215,14 @@ def git_diff(
 def git_rollback(
     repo_root: str = ".",
     file_path: Optional[str] = None,
+    include_untracked: bool = True,
 ) -> ToolResult:
-    """Roll back single file or entire repository to clean HEAD state."""
+    """Roll back single file or entire repository to clean HEAD state.
+
+    include_untracked=False reverts tracked modifications but never deletes
+    untracked files/directories (git clean is skipped). Model-initiated
+    rollbacks use False so the agent cannot destroy user work it did not create.
+    """
     start_time = time.perf_counter()
 
     try:
@@ -362,18 +368,21 @@ def git_rollback(
                     proc1 = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
 
                 # Clean only unprotected paths
-                clean_cmd = [
-                    "git", "clean", "-fd",
-                    "-e", ".harness", "-e", "harness", "-e", "tests", "-e", "zicode",
-                    "-e", "harness_config.yaml", "-e", "PRD.md", "-e", "architecture.md",
-                ]
-                proc2 = subprocess.run(
-                    clean_cmd,
-                    cwd=str(resolved_root),
-                    capture_output=True,
-                    text=True,
-                    timeout=20,
-                )
+                if include_untracked:
+                    clean_cmd = [
+                        "git", "clean", "-fd",
+                        "-e", ".harness", "-e", "harness", "-e", "tests", "-e", "zicode",
+                        "-e", "harness_config.yaml", "-e", "PRD.md", "-e", "architecture.md",
+                    ]
+                    proc2 = subprocess.run(
+                        clean_cmd,
+                        cwd=str(resolved_root),
+                        capture_output=True,
+                        text=True,
+                        timeout=20,
+                    )
+                else:
+                    proc2 = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
             else:
                 proc1 = subprocess.run(
                     ["git", "checkout", "HEAD", "--", "."],
@@ -383,13 +392,16 @@ def git_rollback(
                     timeout=20,
                 )
                 # Clean all untracked files & directories, preserving harness metadata
-                proc2 = subprocess.run(
-                    ["git", "clean", "-fd", "-e", ".harness"],
-                    cwd=str(resolved_root),
-                    capture_output=True,
-                    text=True,
-                    timeout=20,
-                )
+                if include_untracked:
+                    proc2 = subprocess.run(
+                        ["git", "clean", "-fd", "-e", ".harness"],
+                        cwd=str(resolved_root),
+                        capture_output=True,
+                        text=True,
+                        timeout=20,
+                    )
+                else:
+                    proc2 = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         except subprocess.TimeoutExpired:
             latency_ms = int((time.perf_counter() - start_time) * 1000)
             return ToolResult(
@@ -424,7 +436,10 @@ def git_rollback(
                 execution_time_ms=latency_ms,
             )
 
-        raw_output = "Successfully rolled back all repository files and removed untracked files to clean HEAD."
+        if include_untracked:
+            raw_output = "Successfully rolled back all repository files and removed untracked files to clean HEAD."
+        else:
+            raw_output = "Successfully rolled back all tracked repository files to clean HEAD (untracked files preserved)."
 
     latency_ms = int((time.perf_counter() - start_time) * 1000)
     return ToolResult(

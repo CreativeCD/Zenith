@@ -73,6 +73,7 @@ class ErrorCode(str, Enum):
     TOOL_BLOCKED = "TOOL_BLOCKED"
     LOOP_DETECTED = "LOOP_DETECTED"
     MAX_STEPS_EXCEEDED = "MAX_STEPS_EXCEEDED"
+    API_ERROR = "API_ERROR"
 
 
 class VerificationPhase(str, Enum):
@@ -230,6 +231,7 @@ class ToolCall(ContractBase):
     reasoning: str
     args: dict[str, Any]
     fingerprint: str = ""           # SHA256(tool + canonical(args))
+    raw_part: Any = None
 
 
 @dataclass

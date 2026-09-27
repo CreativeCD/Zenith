@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from harness.adapters import ModelAdapter, ModelResponse, get_model_adapter
+from harness.adapters import ModelAdapter, ModelResponse, MultiProviderAdapter, get_model_adapter
 from harness.config import HarnessConfig
 from harness.context_manager import ContextManager, TurnRecord
 from harness.contracts import (
@@ -34,6 +34,7 @@ from harness.contracts import (
     ToolCall,
 )
 from harness.issue_parser import IssueParser
+from harness.prompt_compressor import PromptCompressor
 from harness.recovery import RecoveryEngine
 from harness.repo_intel import RepoIndexBuilder, SemanticRanker
 from harness.report_generator import ReportGenerator
@@ -157,7 +158,17 @@ class Orchestrator:
         model_adapter: ModelAdapter | None = None,
     ) -> None:
         self.config = config or HarnessConfig()
-        self.model_adapter = model_adapter or get_model_adapter(self.config.model)
+        if model_adapter is not None:
+            self.model_adapter = model_adapter
+        elif getattr(self.config.model, "provider", None) and self.config.model.provider.lower() not in ("auto", ""):
+            self.model_adapter = get_model_adapter(self.config.model)
+        else:
+            self.model_adapter = MultiProviderAdapter(
+                model_name=self.config.model.name,
+                gemini_keys=self.config.model.api_keys or ([self.config.model.api_key] if self.config.model.api_key else None),
+            )
+            if hasattr(self.model_adapter, "model_name") and self.model_adapter.model_name:
+                self.config.model.name = self.model_adapter.model_name
 
         out_dir = self.config.telemetry.output_dir
         repo_p = self.config.repo_path
@@ -195,6 +206,15 @@ class Orchestrator:
         self.recovery_engine = RecoveryEngine(
             config=self.config.agent,
             telemetry=self.telemetry,
+        )
+        pc_cfg = getattr(self.config, "prompt_compression", None)
+        # Heuristic-only for issue text: zero extra LLM calls, anchors (code
+        # fences, repro commands, paths, tracebacks) preserved verbatim.
+        self.prompt_compressor = PromptCompressor(
+            enabled=getattr(pc_cfg, "enabled", True),
+            char_threshold=getattr(pc_cfg, "char_threshold", 400),
+            use_llm=False,
+            min_savings_ratio=getattr(pc_cfg, "min_savings_ratio", 0.05),
         )
 
         self.current_phase = AgentPhase.INIT
@@ -249,22 +269,18 @@ class Orchestrator:
     def run(self, issue_text: str) -> SessionResult:
         """Synchronously execute the full orchestrator session."""
         try:
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = None
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
 
-            if loop and loop.is_running():
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as pool:
-                    return pool.submit(
-                        asyncio.run,
-                        self.run_async(issue_text)
-                    ).result()
-            else:
-                return asyncio.run(self.run_async(issue_text))
-        except Exception:
-            return asyncio.run(self.run_async(issue_text))
+        if loop and loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                return pool.submit(
+                    asyncio.run,
+                    self.run_async(issue_text)
+                ).result()
+        return asyncio.run(self.run_async(issue_text))
 
     async def _call_model(
         self,
@@ -298,7 +314,6 @@ class Orchestrator:
         """Asynchronously execute full autonomous ReAct state machine."""
         start_time = time.perf_counter()
         total_tokens = 0
-        cost_usd = 0.0
         total_cost_usd = 0.0
 
         # ─── 0. Pre-Flight Intent Routing (Layer 1) ───────────────────────
@@ -327,6 +342,15 @@ class Orchestrator:
             issue_id="issue",
             repo_path=self.config.repo_path,
         )
+
+        # Zenith speciality: compress the input prompt before it enters context
+        compression = self.prompt_compressor.compress(issue_text)
+        if compression.method != "none":
+            logger.info(
+                "Input prompt compressed %d → %d chars (~%d tokens saved)",
+                len(compression.original), len(compression.compressed), compression.tokens_saved,
+            )
+            issue_text = compression.compressed
 
         issue_plan = await self.issue_parser.parse_issue_async(
             issue_text,
@@ -369,6 +393,7 @@ class Orchestrator:
 
         # ─── 2. Multi-Agent Subagent Coordination (MEDIUM / HIGH / VERY_HIGH) ─
         subagent_out_dir = self.config.telemetry.output_dir
+        subagent_brief = ""
         if issue_plan.complexity_estimate in (Complexity.MEDIUM, Complexity.HIGH, Complexity.VERY_HIGH):
             scout = ScoutSubagent(model_adapter=self.model_adapter, output_dir=subagent_out_dir)
             tree_text = Path(repo_index.file_tree_path).read_text(encoding="utf-8") if Path(repo_index.file_tree_path).exists() else ""
@@ -381,6 +406,8 @@ class Orchestrator:
                     step=self.current_step,
                     phase=self.current_phase,
                 )
+                if Path(scout_report_path).exists():
+                    subagent_brief = Path(scout_report_path).read_text(encoding="utf-8")[:1000]
                 if issue_plan.complexity_estimate in (Complexity.HIGH, Complexity.VERY_HIGH):
                     architect = ArchitectSubagent(model_adapter=self.model_adapter, output_dir=subagent_out_dir)
                     scout_report_content = Path(scout_report_path).read_text(encoding="utf-8")
@@ -393,6 +420,9 @@ class Orchestrator:
                     )
                     # Coder + Critic for HIGH/VERY_HIGH (PRD §4.5 routing table)
                     arch_report_content = Path(arch_report_path).read_text(encoding="utf-8") if Path(arch_report_path).exists() else scout_report_content
+                    # Feed the architect's plan into the main loop context so
+                    # the subagent work actually influences execution.
+                    subagent_brief = arch_report_content[:1500]
                     coder = CoderSubagent(model_adapter=self.model_adapter, output_dir=subagent_out_dir)
                     # Use first suspected file as primary coder target
                     primary_file = issue_plan.suspected_files[0].path if issue_plan.suspected_files else "unknown.py"
@@ -444,6 +474,12 @@ class Orchestrator:
             '  "rollback_checkpoints": [1, 3]\n'
             "}\n"
         )
+        if subagent_brief:
+            plan_prompt = (
+                "# SUBAGENT RECONNAISSANCE BRIEF\n"
+                f"{subagent_brief}\n\n"
+                f"{plan_prompt}"
+            )
         prompt_sections = self.context_manager.build_prompt(ranked_files=self.ranked_files)
         plan_response = await self._call_model(
             system_prompt=prompt_sections.persona,
@@ -477,6 +513,7 @@ class Orchestrator:
         # ─── 4. ReAct Execution Loop ───────────────────────────────────────
         last_observation = ""
         verification_result = None
+        consecutive_model_errors = 0
 
         while self.current_step < self.config.agent.max_steps and self.current_phase not in (
             AgentPhase.DONE,
@@ -549,6 +586,29 @@ class Orchestrator:
 
             content = turn_response.content.strip()
 
+            # Adapter failures surface as "[GEMINI_ERROR:...]" content. Never
+            # treat them as answers: retry briefly, then fail the session.
+            if content.startswith("[GEMINI_ERROR"):
+                consecutive_model_errors += 1
+                self.telemetry.log_event(
+                    event_type=EventType.RECOVERY_EVENT,
+                    step=self.current_step,
+                    phase=self.current_phase,
+                    error_code=ErrorCode.API_ERROR,
+                )
+                if consecutive_model_errors >= 3:
+                    logger.error("Model adapter failed %d times consecutively — aborting session", consecutive_model_errors)
+                    last_observation = content
+                    self.current_phase = AgentPhase.FAILED
+                    break
+                last_observation = (
+                    f"Model call failed ({consecutive_model_errors}/3): {content[:200]}. "
+                    "The previous step produced no output; proceed with the plan."
+                )
+                self.current_step += 1
+                continue
+            consecutive_model_errors = 0
+
             # Check for DONE_CANDIDATE signal in text OR emit_done_candidate tool call
             is_done_candidate_call = bool(
                 turn_response.tool_calls and turn_response.tool_calls[0].tool == "emit_done_candidate"
@@ -561,15 +621,17 @@ class Orchestrator:
                 try:
                     if is_done_candidate_call:
                         t_args = turn_response.tool_calls[0].args or {}
-                        done_candidate = DoneCandidate(
+                        # Constructed for validation only; verification derives
+                        # the authoritative file list from git status.
+                        candidate = DoneCandidate(
                             confidence=float(t_args.get("confidence", 1.0)),
                             evidence=list(t_args.get("evidence", [])),
                             files_modified=list(t_args.get("files_modified", [])),
                         )
                     else:
-                        done_candidate = parse_done_candidate(content)
+                        candidate = parse_done_candidate(content)
 
-                    self.last_done_candidate = done_candidate
+                    self.last_done_candidate = candidate
 
                     self.current_phase = AgentPhase.DONE_CANDIDATE
                     self.telemetry.log_event(
@@ -579,9 +641,13 @@ class Orchestrator:
                     )
 
                     # Trigger Verification Gate (Phase 3)
+                    # modified_files is deliberately None: the gate derives the
+                    # authoritative list from git status. Trusting the model's
+                    # files_modified declaration allows false PASSes via
+                    # under-declaration.
                     verification_result = self.verification_gate.verify(
                         repo_path=self.config.repo_path,
-                        modified_files=done_candidate.files_modified,
+                        modified_files=None,
                         issue_plan=issue_plan,
                         step=self.current_step,
                     )
@@ -648,6 +714,31 @@ class Orchestrator:
                 if not t_call.fingerprint:
                     from harness.recovery import CircuitBreaker
                     t_call.fingerprint = CircuitBreaker.compute_fingerprint(t_call.tool, t_call.args)
+
+                # 3-level circuit breaker evaluation (PRD §4.8.1)
+                cb_level, cb_msg = self.recovery_engine.circuit_breaker.record_and_evaluate(
+                    tool=t_call.tool,
+                    args=t_call.args,
+                    step=self.current_step,
+                )
+                if cb_level >= 2:
+                    self.telemetry.log_event(
+                        event_type=EventType.RECOVERY_EVENT,
+                        step=self.current_step,
+                        phase=self.current_phase,
+                        error_code=ErrorCode.LOOP_DETECTED,
+                    )
+                    if cb_level == 3:
+                        self.revision_count += 1
+                        if self.revision_count > self.config.agent.max_plan_revisions:
+                            self.current_phase = AgentPhase.FAILED
+                            break
+                        self.current_phase = AgentPhase.PLAN
+                    else:
+                        self.current_phase = AgentPhase.REFLECT
+                    last_observation = cb_msg or "Loop detected — shift strategy before re-calling this tool."
+                    self.current_step += 1
+                    continue
 
                 self.telemetry.log_tool_call(
                     step=self.current_step,

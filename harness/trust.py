@@ -143,14 +143,14 @@ class WorkspaceTrustManager:
         ))
 
         try:
-            choice = input(f"\n👉 Do you trust the files in this folder and grant Zenith access? [Y/n]: ").strip().lower()
+            choice = input("\n👉 Do you trust the files in this folder and grant Zenith access? [Y/n]: ").strip().lower()
             if choice in ("", "y", "yes"):
                 self.grant_trust(canonical)
                 c.print(f"[bold green]✅ Workspace trusted. Boundaries locked strictly to: {canonical}[/bold green]\n")
                 return True
             else:
-                c.print(f"[bold red]❌ Workspace trust denied. Zenith is exiting safely without accessing or modifying any files.[/bold red]\n")
+                c.print("[bold red]❌ Workspace trust denied. Zenith is exiting safely without accessing or modifying any files.[/bold red]\n")
                 return False
         except (KeyboardInterrupt, EOFError):
-            c.print(f"\n[dim]Workspace trust prompt cancelled. Exiting Zenith safely.[/dim]\n")
+            c.print("\n[dim]Workspace trust prompt cancelled. Exiting Zenith safely.[/dim]\n")
             return False

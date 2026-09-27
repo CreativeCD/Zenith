@@ -19,7 +19,12 @@ from pathlib import Path
 from typing import List, Optional
 
 from harness.contracts import ErrorCode, ResultStatus, ToolResult
-from harness.tools.security import SecurityError, check_command_blocklist, validate_path
+from harness.tools.security import (
+    SecurityError,
+    check_command_blocklist,
+    sanitized_env,
+    validate_path,
+)
 
 
 def _truncate_lines(text: str, max_lines: int) -> str:
@@ -173,6 +178,7 @@ def run_bash_sandboxed(
             stderr=subprocess.STDOUT,
             text=True,
             preexec_fn=preexec,
+            env=sanitized_env(),
         )
         stdout, _ = proc.communicate(timeout=timeout_sec)
         exit_code = proc.returncode
@@ -346,7 +352,7 @@ def run_test_suite(
             )
 
     preexec = _make_preexec(memory_limit_mb=1024)
-    env = {**os.environ, "PYTHONPATH": f"{resolved_root}:{os.environ.get('PYTHONPATH', '')}"}
+    env = sanitized_env({"PYTHONPATH": f"{resolved_root}:{os.environ.get('PYTHONPATH', '')}"})
 
     try:
         proc = subprocess.Popen(

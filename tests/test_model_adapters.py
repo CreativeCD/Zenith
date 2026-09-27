@@ -32,6 +32,11 @@ from harness.tool_engine import ToolEngine
 from harness.verification import VerificationGate
 
 
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+
 # ─── TEST A: Existing Gemini Adapter ──────────────────────────────────────────
 
 def test_a_gemini_adapter_instantiation_and_contract():
@@ -49,7 +54,7 @@ def test_a_gemini_adapter_instantiation_and_contract():
 
 # ─── TEST B: OpenAI-Compatible Text Response ──────────────────────────────────
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_b_openai_text_response():
     """Mock an OpenAI-compatible text completion response and verify ModelResponse normalization."""
     mock_payload = {
@@ -103,7 +108,7 @@ async def test_b_openai_text_response():
 
 # ─── TEST C: OpenAI-Compatible Tool Call ──────────────────────────────────────
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_c_openai_tool_call_normalization():
     """Mock a response containing an OpenAI function call and verify ToolCall normalization."""
     mock_payload = {
@@ -168,7 +173,7 @@ async def test_c_openai_tool_call_normalization():
 
 # ─── TEST D: Multiple Tool Calls Normalization ────────────────────────────────
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_d_multiple_tool_calls():
     """Verify that multiple tool calls emitted in a single turn are normalized cleanly."""
     mock_payload = {
@@ -235,7 +240,7 @@ async def test_d_multiple_tool_calls():
 
 # ─── TEST E: Malformed JSON Tool Arguments ────────────────────────────────────
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_e_malformed_tool_arguments_handling():
     """Verify malformed JSON tool arguments do not crash adapter and fail safe in ToolEngine."""
     mock_payload = {

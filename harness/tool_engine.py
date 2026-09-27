@@ -380,10 +380,14 @@ class ToolEngine:
             )
 
         elif tool_name == "read_file_range":
+            start_line = _safe_int(args.get("start_line"), 1)
+            # A missing/zero end_line means "read a full window from start",
+            # not "read exactly one line".
+            end_line = _safe_int(args.get("end_line"), 0) or start_line + 249
             return read_file_range(
                 file_path=args.get("file_path", ""),
-                start_line=_safe_int(args.get("start_line"), 1),
-                end_line=_safe_int(args.get("end_line"), 1),
+                start_line=start_line,
+                end_line=end_line,
                 repo_root=root,
             )
 
@@ -429,9 +433,13 @@ class ToolEngine:
             )
 
         elif tool_name == "git_rollback":
+            # Model-initiated rollback: revert tracked changes only. Deleting
+            # untracked files is reserved for user-confirmed or recovery-engine
+            # rollbacks (include_untracked defaults True there).
             return git_rollback(
                 repo_root=root,
                 file_path=args.get("file_path"),
+                include_untracked=False,
             )
 
         elif tool_name == "fetch_external_skill":

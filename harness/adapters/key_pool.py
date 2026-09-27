@@ -45,37 +45,48 @@ class KeyPoolManager:
         else:
             raw_keys = self._load_keys_from_env()
 
-        # Deduplicate preserving order & strip whitespace
+        # Split multi-key entries (comma, semicolon, newline) and deduplicate preserving order
         seen: set[str] = set()
         self._keys: list[str] = []
-        for k in raw_keys:
-            cleaned = (k or "").strip()
-            if cleaned and cleaned not in seen and not cleaned.startswith("REPLACE_WITH"):
-                seen.add(cleaned)
-                self._keys.append(cleaned)
+        for item in raw_keys:
+            if not item:
+                continue
+            # Split comma/semicolon/newline-delimited keys
+            tokens = re.split(r"[,;\n\r]+", str(item))
+            for tok in tokens:
+                cleaned = tok.strip().strip("'\"")
+                if (
+                    cleaned
+                    and cleaned not in seen
+                    and not cleaned.startswith("REPLACE_WITH")
+                    and "your_" not in cleaned.lower()
+                ):
+                    seen.add(cleaned)
+                    self._keys.append(cleaned)
 
         self._stats: dict[str, KeyStats] = {k: KeyStats() for k in self._keys}
         self._current_index: int = 0
 
     @staticmethod
-    def _load_keys_from_env() -> list[str]:
-        """Load AI_API_KEY and AI_API_KEY_1..AI_API_KEY_N from environment."""
+    def _load_keys_from_env(prefixes: list[str] | None = None) -> list[str]:
+        """Load API keys from environment for given prefixes (defaults to Gemini/AI keys)."""
+        target_prefixes = prefixes or ["AI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"]
         keys: list[str] = []
-        primary = os.environ.get("AI_API_KEY")
-        if primary:
-            keys.append(primary)
 
-        # Look for numbered keys (e.g. AI_API_KEY_1 to AI_API_KEY_20)
-        for i in range(1, 21):
-            var_name = f"AI_API_KEY_{i}"
-            val = os.environ.get(var_name)
+        for pfx in target_prefixes:
+            val = os.environ.get(pfx)
             if val:
                 keys.append(val)
+            # Look for numbered keys (e.g. PREFIX_1 to PREFIX_50)
+            for i in range(1, 51):
+                val_n = os.environ.get(f"{pfx}_{i}")
+                if val_n:
+                    keys.append(val_n)
 
-        # Also search for any other AI_API_KEY_* env vars
+        # Also search for any other env var matching any prefix
         for var_name, val in os.environ.items():
-            if var_name.startswith("AI_API_KEY_") and var_name not in [f"AI_API_KEY_{i}" for i in range(1, 21)]:
-                if val:
+            for pfx in target_prefixes:
+                if var_name.startswith(f"{pfx}_") and val:
                     keys.append(val)
 
         return keys

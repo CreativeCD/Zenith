@@ -18,10 +18,12 @@ class ModelResponse:
     tool_calls: list[ToolCall] = field(default_factory=list)
     tokens_in: int = 0
     tokens_out: int = 0
+    tokens_cached: int = 0
     latency_ms: int = 0
     model: str = ""
     finish_reason: str = "stop"
     cost_usd: float = 0.0
+    raw_parts: list[Any] = field(default_factory=list)
 
 
 @runtime_checkable
@@ -38,6 +40,7 @@ class ModelAdapter(Protocol):
         use_structured_output: bool = True,
         seed: int | None = 42,
         reasoning_effort: str = "low",
+        history: list[dict[str, str]] | None = None,
     ) -> ModelResponse:
         """Execute chat completion request with optional tool declarations."""
         ...

@@ -12,6 +12,7 @@ Inspired by Ponytail (semantic LLM prompt & context compression):
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -220,6 +221,11 @@ class SemanticCompressor:
     ) -> Tuple[List[Dict[str, str]], int]:
         """Compact older tool observation pairs in conversation history.
 
+        Handles both history shapes:
+        - Native function calling: user entries with "tool_responses" lists
+          (outputs compacted in place, oldest first)
+        - Legacy prose: user messages containing "Observation from `tool`"
+
         Args:
             history: Full list of message dicts (role, content)
             keep_recent_pairs: How many recent tool exchanges to keep in full detail
@@ -231,17 +237,22 @@ class SemanticCompressor:
             return history, 0
 
         # Identify tool observation user messages:
-        # Pattern: role == 'user' and content.startswith('Observation from `')
+        # Native: role == 'user' and a non-empty "tool_responses" list
+        # Legacy: role == 'user' and 'Observation from `' in content
         obs_indices = [
             i for i, msg in enumerate(history)
-            if msg.get("role") == "user" and "Observation from `" in msg.get("content", "")
+            if msg.get("role") == "user"
+            and (
+                (isinstance(msg.get("tool_responses"), list) and bool(msg["tool_responses"]))
+                or "Observation from `" in str(msg.get("content", ""))
+            )
         ]
 
         if len(obs_indices) <= keep_recent_pairs:
             return list(history), 0
 
         # Indices that need compaction: all except the last keep_recent_pairs
-        to_compact = obs_indices[:-keep_recent_pairs]
+        to_compact = set(obs_indices[:-keep_recent_pairs])
         compacted: List[Dict[str, str]] = []
         tokens_saved = 0
 
@@ -249,33 +260,73 @@ class SemanticCompressor:
         total_obs = len(obs_indices)
 
         for i, msg in enumerate(history):
-            if i in to_compact:
-                obs_pos = obs_indices.index(i)
-                age = total_obs - 1 - obs_pos
-                content = msg.get("content", "")
-                original_len = len(content)
+            if i not in to_compact:
+                compacted.append(dict(msg))
+                continue
 
-                # Extract tool name from header: "Observation from `{tool}`:\n..."
-                match = re.search(r"Observation from `(\w+)`:\n(.*)", content, re.DOTALL)
-                if match:
-                    tool_name = match.group(1)
-                    raw_body = match.group(2)
+            obs_pos = obs_indices.index(i)
+            age = total_obs - 1 - obs_pos
+
+            # ── Native function-calling shape ──
+            responses = msg.get("tool_responses")
+            if isinstance(responses, list) and responses:
+                new_msg = dict(msg)
+                new_responses = []
+                for r in responses:
+                    tool_name = str(r.get("name", "tool"))
+                    raw_output = str(r.get("output", ""))
+                    original_len = len(raw_output)
+                    try:
+                        parsed_args = r.get("args") if isinstance(r.get("args"), dict) else {}
+                    except (ValueError, TypeError):
+                        parsed_args = {}
                     compact_body = self.compress_observation(
                         tool=tool_name,
-                        args={},
-                        raw_output=raw_body,
+                        args=parsed_args,
+                        raw_output=raw_output,
+                        exit_code=r.get("exit_code") if isinstance(r.get("exit_code"), int) else None,
                         age_in_turns=age,
                     )
-                    new_content = f"Observation from `{tool_name}` (compacted):\n{compact_body}"
-                else:
-                    # Generic compaction
-                    lines = content.splitlines()
-                    new_content = "\n".join(lines[:3] + [f"[... {max(0, len(lines) - 4)} lines compacted ...]"] + lines[-1:])
+                    new_responses.append({**r, "output": compact_body, "compacted": True})
+                    tokens_saved += max(0, (original_len - len(compact_body)) // 4)
+                new_msg["tool_responses"] = new_responses
+                compacted.append(new_msg)
+                continue
 
-                new_len = len(new_content)
-                tokens_saved += max(0, (original_len - new_len) // 4)
-                compacted.append({"role": "user", "content": new_content})
+            # ── Legacy prose shape ──
+            content = str(msg.get("content", ""))
+            original_len = len(content)
+
+            # Header formats:
+            #   "Observation from `{tool}` args={json}:\n..."  (current)
+            #   "Observation from `{tool}`:\n..."              (legacy)
+            first_line, sep, body = content.partition("\n")
+            header_match = re.match(
+                r"Observation from `(\w+)`(?: args=(\{.*\}))?:$", first_line
+            )
+            if header_match and sep:
+                tool_name = header_match.group(1)
+                raw_args = header_match.group(2)
+                try:
+                    parsed_args = json.loads(raw_args) if raw_args else {}
+                    if not isinstance(parsed_args, dict):
+                        parsed_args = {}
+                except (ValueError, TypeError):
+                    parsed_args = {}
+                compact_body = self.compress_observation(
+                    tool=tool_name,
+                    args=parsed_args,
+                    raw_output=body,
+                    age_in_turns=age,
+                )
+                new_content = f"Observation from `{tool_name}` (compacted):\n{compact_body}"
             else:
-                compacted.append(dict(msg))
+                # Generic compaction
+                lines = content.splitlines()
+                new_content = "\n".join(lines[:3] + [f"[... {max(0, len(lines) - 4)} lines compacted ...]"] + lines[-1:])
+
+            new_len = len(new_content)
+            tokens_saved += max(0, (original_len - new_len) // 4)
+            compacted.append({"role": "user", "content": new_content})
 
         return compacted, tokens_saved

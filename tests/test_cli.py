@@ -8,10 +8,33 @@ def test_cli_parser_defaults():
     args = parser.parse_args([])
     assert args.repo == "."
     assert args.issue == "issue.txt"
-    assert args.max_steps == 25
-    assert args.model is None  # Defaults to None; YAML config provides actual model
-    assert args.agent_mode == "auto"
+    # None means "not overridden on CLI" — YAML config provides actual values
+    assert args.max_steps is None
+    assert args.model is None
+    assert args.temperature is None
+    assert args.token_budget is None
+    assert args.agent_mode is None
+    assert args.output_dir is None
     assert args.dry_run is False
+
+
+def test_cli_yaml_not_clobbered_by_defaults(tmp_path, monkeypatch):
+    """CLI defaults must not override tuned harness_config.yaml values."""
+    import yaml
+
+    from harness.config import load_config
+
+    cfg_file = tmp_path / "harness_config.yaml"
+    cfg_file.write_text(yaml.safe_dump({
+        "agent": {"max_steps": 15},
+        "context": {"max_context_tokens": 128000},
+        "model": {"temperature_act": 0.4},
+    }))
+    monkeypatch.chdir(tmp_path)
+    config = load_config(config_path=str(cfg_file), cli_args=vars(build_parser().parse_args([])))
+    assert config.agent.max_steps == 15
+    assert config.context.max_context_tokens == 128000
+    assert config.model.temperature_act == 0.4
 
 
 def test_cli_dry_run_execution(tmp_path):

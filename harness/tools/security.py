@@ -6,9 +6,10 @@ Enforces zero path traversal outside repo root and blocks forbidden dangerous co
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
-from typing import List
+from typing import Dict, List, Optional
 
 # 12 Forbidden command patterns as specified in PRD §4.3.4 (hardened against evasion)
 BLOCKED_PATTERNS: List[str] = [
@@ -84,3 +85,19 @@ def check_command_blocklist(command: str) -> None:
             raise SecurityError(
                 f"Command blocked by security policy: matches pattern '{pattern}'"
             )
+
+
+# Env var names that commonly hold secrets. Sandboxed subprocesses must never
+# inherit these: a command as simple as `echo $AI_API_KEY > file` followed by
+# read_file_range would exfiltrate the key.
+SECRET_ENV_REGEX = re.compile(
+    r"(?i)(API_?KEY|SECRET|TOKEN|PASSW(?:OR)?D|CREDENTIAL|PRIVATE_?KEY|ACCESS_?KEY|SESSION_?KEY|\bAUTH\b)"
+)
+
+
+def sanitized_env(extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Return os.environ minus secret-bearing variables, plus optional extras."""
+    env = {k: v for k, v in os.environ.items() if not SECRET_ENV_REGEX.search(k)}
+    if extra:
+        env.update(extra)
+    return env

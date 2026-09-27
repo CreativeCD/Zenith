@@ -11,7 +11,7 @@ Zenith is a multi-agent, token-optimized, contract-driven AI coding harness desi
 
 - **9-Layer Decoupled Architecture:** From issue parsing and AST-level repository intelligence to a 6-phase deterministic verification gate and recovery engine.
 - **Formal State Machine:** 11 deterministic states with cycle-breaking circuit breakers and rollback checkpoints.
-- **Extreme Token Efficiency:** Byte-identical prompt prefix KV cache reuse, structured subagent context isolation, and rolling working memory compaction.
+- **Extreme Token Efficiency:** Built-in Ponytail-style user prompt compression (anchor-preserving heuristic + validated LLM rewrite), byte-stable system prompt prefix for implicit KV cache reuse, structured subagent context isolation, and rolling working memory compaction.
 - **Zero-Tolerance Verification:** Multi-phase gates (Syntax → Delta Linter → Reproduction Test → Full Regression → Diff Audit → Side-Effect Check).
 - **Comprehensive Telemetry:** Append-only JSONL event stream, real-time token/cost dashboard, and auto-compiled 8-section audit reports.
 

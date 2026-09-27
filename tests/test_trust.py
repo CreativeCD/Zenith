@@ -1,8 +1,5 @@
 """Unit tests for harness/trust.py."""
 
-import json
-from pathlib import Path
-from unittest.mock import patch
 import pytest
 
 from harness.trust import WorkspaceTrustManager

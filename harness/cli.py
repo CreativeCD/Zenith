@@ -564,22 +564,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to file containing GitHub issue description",
     )
     parser.add_argument(
-        "--agent-mode",
-        type=str,
-        default="auto",
-        help="Agent mode: auto, single_react, planner_executor, multi_agent",
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=str,
-        default=None,
-        help="Directory to save telemetry, logs, and artifacts",
-    )
-    parser.add_argument(
         "--max-steps",
         type=int,
-        default=25,
-        help="Maximum agent turns before halting",
+        default=None,
+        help="Maximum agent turns before halting (default: uses harness_config.yaml setting)",
     )
     parser.add_argument(
         "--model",
@@ -592,6 +580,25 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Model provider override: gemini, deepseek, qwen, openai",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=None,
+        help="Sampling temperature for plan/action turns (default: uses harness_config.yaml setting)",
+    )
+    parser.add_argument(
+        "--token-budget",
+        type=int,
+        default=None,
+        help="Total context window token budget (default: uses harness_config.yaml setting)",
+    )
+    parser.add_argument(
+        "--agent-mode",
+        type=str,
+        choices=["auto", "single", "multi"],
+        default=None,
+        help="Agent mode: auto-select by complexity, single ReAct agent, or full multi-agent pool (default: uses harness_config.yaml setting)",
     )
     parser.add_argument(
         "--base-url",
@@ -615,6 +622,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--verbose",
         action="store_true",
         help="Verbose logging mode",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Directory to write telemetry, diffs, and execution report (default: uses harness_config.yaml setting)",
     )
     parser.add_argument(
         "-q",
