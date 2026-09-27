@@ -281,6 +281,8 @@ class GeminiAdapter:
                         contents.append(types.Content(role="user", parts=[types.Part(text=user_message)]))
                 if not contents:
                     contents = [types.Content(role="user", parts=[types.Part(text=user_message or "Hello")])]
+                elif contents[-1].role != "user":
+                    contents.append(types.Content(role="user", parts=[types.Part(text=user_message or "Please proceed with the next step or synthesize your findings.")]))
             else:
                 contents = [
                     types.Content(role="user", parts=[types.Part(text=user_message or "Hello")])

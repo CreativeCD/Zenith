@@ -51,6 +51,7 @@ from harness.contracts import (
 )
 from harness.issue_parser import IssueParser
 from harness.repo_intel import RepoIndexBuilder
+from harness.semantic_compressor import SemanticCompressor
 from harness.skills.manager import SkillDefinition, SkillManager
 from harness.tool_engine import ToolEngine
 from harness.tools.executor import run_test_suite
@@ -85,6 +86,8 @@ CORE OPERATIONAL RULES:
 4. Transparency:
    - Explain your rationale concisely before or after taking tool actions.
    - Synthesize your findings clearly when the task is verified.
+5. Autonomous Completion:
+   - Once you have gathered sufficient information, inspected the necessary files, or verified a fix, synthesize your final findings in clear markdown and conclude without calling further tools.
 
 {skills_block}
 """
@@ -97,7 +100,9 @@ class ZenithREPL:
         self.config = config
         self.repo_path = str(Path(config.repo_path).resolve())
         self.skill_manager = SkillManager(repo_root=self.repo_path)
+        self.semantic_compressor = SemanticCompressor()
         self.context_manager = ContextManager(
+            config=getattr(config, "context", None),
             output_dir=str(Path(self.repo_path) / ".harness"),
             adapter=None,
         )
@@ -607,7 +612,8 @@ class ZenithREPL:
             f"2. Check if the project is actually working according to its intended plan and requirements.\n"
             f"3. Find where it has bugs, runtime crashes, missing error handling, unhandled edge cases, or logic loopholes.\n"
             f"4. If bugs or loopholes are found, apply minimal, clean patches using apply_patch / write_file.\n"
-            f"5. Run run_test_suite (or execute the project) to verify that everything works cleanly with zero regressions.\n\n"
+            f"5. Run run_test_suite (or execute the project) to verify that everything works cleanly with zero regressions.\n"
+            f"6. Conclude with a complete markdown summary of issues found, files inspected, and fixes applied when done. Do not continue calling tools once your verification is complete.\n\n"
             f"Start your deep-dive inspection now."
         )
 
@@ -623,9 +629,9 @@ class ZenithREPL:
         """Multi-turn autonomous execution loop with deduplication, loop prevention, and memory."""
         self.history.append({"role": "user", "content": initial_prompt})
 
-        max_turns = 16
+        max_turns = max(getattr(self.config.agent, "max_steps", 40), 40)
         current_turn = 0
-        executed_tool_signatures: list[str] = []
+        loop_detections_in_a_row = 0
 
         system_prompt = self._build_system_prompt()
 
@@ -633,9 +639,34 @@ class ZenithREPL:
             current_turn += 1
             self.step_counter += 1
 
-            # Prepare working memory summary for system prompt
+            # 1. Semantic Input Compression: compact older observations to preserve context
+            self.history, tokens_saved = self.semantic_compressor.compact_history(
+                self.history,
+                keep_recent_pairs=3,
+            )
+
+            # 2. Prepare working memory summary with active directives
             wm_text = format_working_memory(self.context_manager.working_memory)
+            directives = []
+            if self.context_manager.working_memory.files_examined:
+                files_str = ", ".join(f"`{f}`" for f in list(self.context_manager.working_memory.files_examined.keys())[:8])
+                directives.append(f"- Already inspected: {files_str}. Do NOT re-read these sections unless modified.")
+            if self.context_manager.working_memory.edits_applied:
+                edits_str = "; ".join(self.context_manager.working_memory.edits_applied[:5])
+                directives.append(f"- Edits applied: {edits_str}. Verify with run_test_suite or git_diff.")
+            if self.context_manager.working_memory.test_status and "PASSING" in self.context_manager.working_memory.test_status:
+                directives.append("- Test suite is PASSING. Avoid redundant re-runs without code modifications.")
+
+            if directives:
+                wm_text += "\n\n### ACTIVE EXECUTION DIRECTIVES\n" + "\n".join(directives)
+
             full_system_prompt = f"{system_prompt}\n\n{wm_text}"
+
+            # 3. Context token budget check & snapshot
+            total_prompt_tokens = count_tokens(full_system_prompt) + sum(count_tokens(str(m.get("content", ""))) for m in self.history)
+            if self.context_manager.budget_manager.is_compression_needed(total_prompt_tokens):
+                self.context_manager.summarizer.write_snapshot(self.context_manager.working_memory)
+                self.history, _ = self.semantic_compressor.compact_history(self.history, keep_recent_pairs=2)
 
             with console.status(f"[bold cyan]🧠 Step {current_turn}/{max_turns}: Thinking & inspecting...[/bold cyan]", spinner="dots"):
                 response = await self.adapter.complete(
@@ -659,38 +690,51 @@ class ZenithREPL:
                     if not tc.reasoning or not str(tc.reasoning).strip():
                         tc.reasoning = f"Execute {tc.tool}"
 
-                    # ── Loop prevention check ──
-                    sig = f"{tc.tool}:{json.dumps(tc.args, sort_keys=True)}"
-                    if len(executed_tool_signatures) >= 2 and executed_tool_signatures[-1] == sig and executed_tool_signatures[-2] == sig:
-                        console.print(f"[bold yellow]⚠️  Loop Prevention:[/bold yellow] Repeated call to `{tc.tool}` with identical args. Breaking cycle.")
-                        self.history.append({"role": "user", "content": f"You called `{tc.tool}` with identical args multiple times. Synthesize what you learned or proceed to the next step."})
-                        continue
-
-                    executed_tool_signatures.append(sig)
-
                     console.print(f"  [cyan]🛠️  Tool Call:[/cyan] [bold]{tc.tool}[/bold] [dim]({tc.reasoning})[/dim]")
                     tool_res = self.tool_engine.execute(tc)
 
                     # Process observation truncation through ContextManager
                     tool_res = self.context_manager.process_tool_result(tool_res)
 
-                    if tool_res.status == ResultStatus.SUCCESS:
-                        stat_color = "green"
-                        stat_icon = "✅"
+                    if tool_res.error_code == ErrorCode.LOOP_DETECTED:
+                        loop_detections_in_a_row += 1
+                        stat_color = "yellow"
+                        stat_icon = "⚠️ "
+                        console.print(f"     [{stat_color}]{stat_icon} {tool_res.tool}:[/] [bold yellow]{tool_res.truncated_output}[/bold yellow]")
+                        tool_feedback = (
+                            f"Tool `{tc.tool}` blocked by Loop Prevention:\n{tool_res.truncated_output}\n"
+                            f"You already executed this exact call. DO NOT repeat it. "
+                            f"Synthesize what you have learned from your observations or move to the next phase."
+                        )
                     else:
-                        stat_color = "red"
-                        stat_icon = "❌"
+                        loop_detections_in_a_row = 0
+                        if tool_res.status == ResultStatus.SUCCESS:
+                            stat_color = "green"
+                            stat_icon = "✅"
+                        else:
+                            stat_color = "red"
+                            stat_icon = "❌"
 
-                    preview = tool_res.truncated_output.strip()
-                    if len(preview) > 240:
-                        preview = preview[:240] + "..."
-                    console.print(f"     [{stat_color}]{stat_icon} {tool_res.tool}:[/] [dim]{preview}[/dim]")
+                        preview = tool_res.truncated_output.strip()
+                        if len(preview) > 240:
+                            preview = preview[:240] + "..."
+                        console.print(f"     [{stat_color}]{stat_icon} {tool_res.tool}:[/] [dim]{preview}[/dim]")
+
+                        tool_feedback = (
+                            f"Tool `{tc.tool}` executed with status {tool_res.status.value}.\n"
+                            f"Output:\n{tool_res.truncated_output}"
+                        )
 
                     # ── Update Working Memory based on tool executed ──
                     if tc.tool == "read_file_range":
                         fp = tc.args.get("file_path", "")
                         self.context_manager.update_working_memory(
                             file_examined=(fp, f"Read lines {tc.args.get('start_line')}-{tc.args.get('end_line')}"),
+                        )
+                    elif tc.tool == "search_code":
+                        q = tc.args.get("query", "")
+                        self.context_manager.update_working_memory(
+                            strategy=f"Searched for '{q}'",
                         )
                     elif tc.tool == "apply_patch":
                         tf = tc.args.get("target_file", "")
@@ -708,6 +752,26 @@ class ZenithREPL:
                             test_status=stat_str,
                         )
 
+                    # ── Update Active Action Plan dynamically ──
+                    if self.active_plan:
+                        if tc.tool in ("read_file_range", "search_code", "list_dir", "get_symbol"):
+                            if self.active_plan[0]["status"] == "pending":
+                                self.active_plan[0]["status"] = "in_progress"
+                        elif tc.tool in ("apply_patch", "write_file"):
+                            self.active_plan[0]["status"] = "completed"
+                            if len(self.active_plan) > 1:
+                                self.active_plan[1]["status"] = "completed"
+                            if len(self.active_plan) > 2:
+                                self.active_plan[2]["status"] = "completed"
+                            if len(self.active_plan) > 3:
+                                self.active_plan[3]["status"] = "in_progress"
+                        elif tc.tool == "run_test_suite":
+                            if len(self.active_plan) > 3:
+                                if tool_res.exit_code == 0:
+                                    self.active_plan[3]["status"] = "completed"
+                                else:
+                                    self.active_plan[3]["status"] = "in_progress"
+
                     # ── Record TurnRecord in ContextManager ──
                     turn_rec = TurnRecord(
                         step=self.step_counter,
@@ -721,12 +785,13 @@ class ZenithREPL:
                     self.context_manager.add_turn(turn_rec)
 
                     # Append to conversational history for next turn
-                    tool_feedback = (
-                        f"Tool `{tc.tool}` executed with status {tool_res.status.value}.\n"
-                        f"Output:\n{tool_res.truncated_output}"
-                    )
                     self.history.append({"role": "model", "content": f"I executed tool `{tc.tool}` ({tc.reasoning})"})
                     self.history.append({"role": "user", "content": f"Observation from `{tc.tool}`:\n{tool_feedback}"})
+
+                # If model hit 3 consecutive loop detections, force termination with summary
+                if loop_detections_in_a_row >= 3:
+                    console.print("\n[bold yellow]⚠️  Loop limit reached. Synthesizing current findings...[/bold yellow]\n")
+                    break
 
                 # Continue next tool iteration
                 continue
