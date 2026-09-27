@@ -7,10 +7,16 @@
 #   zicode --dry                    → dry-run (no API calls, no cost)
 #   zicode --verbose                → verbose output with token stream
 #   zicode -h                       → show help
+SCRIPT_DIR="${0:A:h}"
+ZENITH_HOME="$SCRIPT_DIR"
 
-ZENITH_HOME="/Users/vamsikrishna/Dev Projects/i proj/Zenith"
-PYTHON="/opt/anaconda3/bin/python3"
-
+if [[ -x "$ZENITH_HOME/.venv/bin/python" ]]; then
+  PYTHON="$ZENITH_HOME/.venv/bin/python"
+elif command -v python3 &>/dev/null; then
+  PYTHON="python3"
+else
+  PYTHON="python"
+fi
 # ── Help ────────────────────────────────────────────────────────────────────
 if [[ "$1" == "-h" || "$1" == "--help" ]]; then
   echo ""
@@ -94,11 +100,19 @@ echo "  ⚡ zicode → Zenith AI Engine"
 echo "  Model : gemini-3.5-flash-lite (cascade: 3.5-flash → 3.6-flash)"
 echo "  Pool  : $KEY_COUNT active keys (~$(( KEY_COUNT * 15 )) RPM capacity)"
 echo "  Repo  : $REPO_PATH"
-echo "  Issue : $ISSUE_PATH"
+if [[ $POSITIONAL -ge 2 ]]; then
+  echo "  Issue : $ISSUE_PATH"
+fi
 [[ ${#EXTRA_FLAGS[@]} -gt 0 ]] && echo "  Flags : ${EXTRA_FLAGS[*]}"
 echo ""
 
-cd "$ZENITH_HOME" && "$PYTHON" -m harness.cli \
-  --repo "$REPO_PATH" \
-  --issue "$ISSUE_PATH" \
-  "${EXTRA_FLAGS[@]}"
+if [[ $POSITIONAL -ge 2 ]]; then
+  cd "$ZENITH_HOME" && exec "$PYTHON" -m harness.cli \
+    --repo "$REPO_PATH" \
+    --issue "$ISSUE_PATH" \
+    "${EXTRA_FLAGS[@]}"
+else
+  cd "$ZENITH_HOME" && exec "$PYTHON" -m harness.cli \
+    --repo "$REPO_PATH" \
+    "${EXTRA_FLAGS[@]}"
+fi
