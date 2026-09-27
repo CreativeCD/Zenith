@@ -23,6 +23,7 @@ class ModelResponse:
     model: str = ""
     finish_reason: str = "stop"
     cost_usd: float = 0.0
+    raw_parts: list[Any] = field(default_factory=list)
 
 
 @runtime_checkable

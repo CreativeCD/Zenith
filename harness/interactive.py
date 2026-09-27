@@ -18,16 +18,20 @@ import asyncio
 import json
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 
-from rich.console import Console
+from rich import box
+from rich.console import Console, Group
+from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
+from rich.text import Text
 
-from harness.adapters.gemini_adapter import GeminiAdapter
+from harness.adapters.multi_provider import MultiProviderAdapter
 from harness.config import HarnessConfig
 from harness.context_manager import (
     ContextManager,
@@ -103,9 +107,8 @@ class ZenithREPL:
             adapter=None,
         )
         self.repo_index_builder = RepoIndexBuilder(repo_path=self.repo_path)
-        self.adapter = GeminiAdapter(
+        self.adapter = MultiProviderAdapter(
             model_name=config.model.name,
-            key_pool=None,
         )
         self.context_manager.adapter = self.adapter
         pc_cfg = getattr(config, "prompt_compression", None)
@@ -124,9 +127,29 @@ class ZenithREPL:
         self.tool_definitions = self.tool_engine.get_tool_definitions()
         self.history: list[dict[str, str]] = []
         self.active_issue: IssuePlan | None = None
+        self.active_issue_label: str = ""
+        self.active_issue_path: Path | None = None
         self.active_plan: list[dict[str, Any]] = []
         self.session_active = True
         self.step_counter = 0
+
+        # Auto-load issue specification if configured or passed via CLI
+        if getattr(config, "issue_path", None):
+            ip = Path(config.issue_path)
+            if not ip.is_absolute():
+                ip = Path(self.repo_path) / ip
+            if ip.is_file():
+                try:
+                    self.load_issue(ip)
+                except Exception:
+                    pass
+
+        # Session-wide token/cost accounting (token-efficiency visibility)
+        self.session_tokens_in = 0
+        self.session_tokens_out = 0
+        self.session_tokens_cached = 0
+        self.session_cost_usd = 0.0
+        self.session_model_calls = 0
 
         # Initialize prompt session
         hist_file = Path.home() / ".zenith_history"
@@ -207,7 +230,7 @@ class ZenithREPL:
             if rp.is_file() and rp.stat().st_size > 0:
                 try:
                     lines = rp.read_text(encoding="utf-8", errors="ignore").splitlines()
-                    non_empty = [l.strip() for l in lines if l.strip()][:40]
+                    non_empty = [line.strip() for line in lines if line.strip()][:40]
                     profile["readme_summary"] = "\n".join(non_empty)
                     profile["readme_file"] = rc
                     break
@@ -245,8 +268,9 @@ class ZenithREPL:
         """Render a sleek startup banner showcasing repository intelligence."""
         profile = self.profile_repository()
         repo_name = profile["name"]
-        key_count = self.adapter.key_pool.total_keys
-        model_name = self.config.model.name
+        key_count = getattr(self.adapter, "total_keys", 0)
+        provider_summary = getattr(self.adapter, "provider_summary", f"{key_count} active keys")
+        banner_model = getattr(self.adapter, "model_name", self.config.model.name)
         skills_count = len(self.skill_manager.discover_skills())
 
         stack_str = f"[bold green]{profile['stack']}[/bold green]"
@@ -264,16 +288,32 @@ class ZenithREPL:
             if clean_first:
                 readme_preview = f"\n[bold]Overview[/bold] : [dim]{clean_first[:80]}[/dim]"
 
+        discovered_issues = self.discover_issues()
+        issue_banner_line = ""
+        if self.active_issue:
+            lbl = self.active_issue_label or "issue"
+            goal_preview = f" [dim]({self.active_issue.primary_goal[:60]})[/dim]" if self.active_issue.primary_goal else ""
+            issue_banner_line = f"\n[bold]Target[/bold]   : [bold yellow]🎯 Active: {lbl}[/bold yellow]{goal_preview}"
+        elif discovered_issues:
+            issues_summary = ", ".join(lbl for lbl, _ in discovered_issues[:3])
+            if len(discovered_issues) > 3:
+                issues_summary += f", +{len(discovered_issues) - 3} more"
+            issue_banner_line = (
+                f"\n[bold]Issues[/bold]   : [bold cyan]{len(discovered_issues)} detected[/bold cyan] [dim]({issues_summary})[/dim]\n"
+                f"           [dim]Type [bold cyan]/issues[/bold cyan] to list, or [bold cyan]/issue <#>[/bold cyan] (e.g. 'solve issue 3') to target[/dim]"
+            )
+
         banner_text = (
             f"[bold cyan]⚡ ZENITH CODE[/bold cyan] [dim]— Autonomous AI Engineer (Claude Code style)[/dim]\n"
             f"[bold]Repo[/bold]     : [green]{repo_name}[/green] [dim]({self.repo_path})[/dim]\n"
             f"[bold]Project[/bold]  : {stack_str} • {file_count_str}\n"
             f"[bold]Trust[/bold]    : [bold green]🔒 Verified & Jailed strictly to this folder[/bold green]\n"
-            f"[bold]Model[/bold]    : [cyan]{model_name}[/cyan] [dim]({key_count} active keys)[/dim]\n"
-            f"[bold]Skills[/bold]   : [cyan]{skills_count} installed[/cyan] [dim](Type /skills to list)[/dim]{readme_preview}\n"
-            f"[bold]Commands[/bold] : Type [bold cyan]/scan[/bold cyan] to deep-dive audit codebase, [bold cyan]/plan <goal>[/bold cyan] to plan, [bold cyan]/help[/bold cyan] for all commands."
+            f"[bold]Model[/bold]    : [cyan]{banner_model}[/cyan] [dim]({provider_summary})[/dim]\n"
+            f"[bold]Skills[/bold]   : [cyan]{skills_count} installed[/cyan] [dim](Type /skills to list)[/dim]"
+            f"{issue_banner_line}{readme_preview}\n"
+            f"[bold]Commands[/bold] : Type [bold cyan]/scan[/bold cyan] to deep-dive audit codebase, [bold cyan]/issues[/bold cyan] to view issues, [bold cyan]/plan <goal>[/bold cyan] to plan, [bold cyan]/help[/bold cyan] for all commands."
         )
-        console.print(Panel(banner_text, border_style="cyan", expand=False))
+        console.print(Panel(banner_text, border_style="bold cyan", box=box.ROUNDED, expand=False))
         console.print("")
 
     def print_help(self) -> None:
@@ -283,11 +323,14 @@ class ZenithREPL:
         table.add_column("Description", style="white")
 
         table.add_row("/scan, /audit, /debug", "Deep-dive audit codebase: run project, find bugs, loopholes & fix them")
+        table.add_row("/issues", "List all discovered issue specification files in repository")
+        table.add_row("/issue <#|name>", "Target and autonomously solve a specific issue (e.g. /issue 3)")
         table.add_row("/plan <task>", "Formulate an explicit multi-step plan before execution")
         table.add_row("/skills", "List all installed custom & internet skills")
         table.add_row("/skills show <name>", "Display detailed instructions for an installed skill")
         table.add_row("/skills install <src>", "Install a skill from GitHub, URL, or local folder")
         table.add_row("/context", "Display token usage breakdown and working memory")
+        table.add_row("/tokens", "Show session-wide token & cost accounting")
         table.add_row("/test", "Run repo test suite and show results")
         table.add_row("/diff", "Display git diff of uncommitted changes")
         table.add_row("/status", "Show git status of the working tree")
@@ -297,12 +340,12 @@ class ZenithREPL:
         table.add_row("exit, quit, bye", "Exit the interactive session")
 
         console.print(table)
-        console.print("\n[dim]💡 Tip: You can also chat naturally! E.g. 'find the issues and bugs in the project', 'where are the loopholes?', or 'install skill https://...'.[/dim]\n")
+        console.print("\n[dim]💡 Tip: You can also chat naturally! E.g. 'solve issue 3', 'find the issues and bugs in the project', or 'where are the loopholes?'.[/dim]\n")
 
-    # ─── OPTIONAL ISSUE SPECIFICATION DISCOVERY ─────────────────────────────────
+    # ─── OPTIONAL ISSUE SPECIFICATION DISCOVERY & TARGETING ─────────────────────
 
     def discover_issues(self) -> list[tuple[str, Path]]:
-        """Optional scan for issue files if user happens to have one."""
+        """Optional scan for issue files if repository provides them."""
         root = Path(self.repo_path)
         found: list[tuple[str, Path]] = []
 
@@ -323,6 +366,8 @@ class ZenithREPL:
                     if f.is_file() and f.suffix in (".md", ".txt") and f.stat().st_size > 0:
                         found.append((f"{dname}/{f.name}", f))
 
+        # Sort naturally by filename / label
+        found.sort(key=lambda item: item[0])
         return found
 
     def load_issue(self, issue_path: Path) -> IssuePlan:
@@ -330,8 +375,133 @@ class ZenithREPL:
         parser = IssueParser()
         plan = parser.parse_issue(str(issue_path), repo_path=self.repo_path)
         self.active_issue = plan
+        self.active_issue_path = issue_path
+        try:
+            rel = issue_path.relative_to(self.repo_path)
+            self.active_issue_label = str(rel)
+        except Exception:
+            self.active_issue_label = issue_path.name
         self.context_manager.set_issue(plan)
         return plan
+
+    def show_issues(self) -> None:
+        """Display table of all discovered issue files in the repository."""
+        issues = self.discover_issues()
+        if not issues:
+            console.print("[dim]No issue specification files discovered in repository.[/dim]")
+            console.print("To load an issue, pass it via: [bold cyan]zicode /path/to/issue.md[/bold cyan] or put an issue file in [bold]issues/[/bold]\n")
+            return
+
+        table = Table(title=f"📋 Discovered Issues ({len(issues)} found)", border_style="cyan")
+        table.add_column("#", style="bold cyan", width=4)
+        table.add_column("Issue File", style="green", no_wrap=True)
+        table.add_column("Goal / Title", style="white")
+        table.add_column("Status", width=12)
+
+        for idx, (label, ipath) in enumerate(issues, start=1):
+            title = ""
+            try:
+                for line in ipath.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    line = line.strip()
+                    if line.startswith("# "):
+                        title = line.lstrip("#").strip()
+                        break
+                    elif line.lower().startswith("title:"):
+                        title = line[6:].strip()
+                        break
+            except Exception:
+                pass
+            if not title:
+                title = label
+
+            is_active = (self.active_issue_path and Path(self.active_issue_path).resolve() == ipath.resolve())
+            status = "[bold green]🎯 Active[/bold green]" if is_active else "[dim]Available[/dim]"
+            table.add_row(str(idx), label, title[:70], status)
+
+        console.print(table)
+        console.print("\n[dim]To solve a specific issue: /issue <number|name> (e.g. /issue 3 or 'solve issue 3')[/dim]\n")
+
+    def select_issue(self, target: str) -> tuple[str, Path] | None:
+        """Find and activate a specific issue by number, filename, or keyword."""
+        issues = self.discover_issues()
+        if not issues:
+            console.print("[dim]No issues found in repository.[/dim]")
+            return None
+
+        target_clean = target.strip()
+        matched: tuple[str, Path] | None = None
+
+        # 1. Match by 1-based index (e.g. "1", "2", "3")
+        if target_clean.isdigit():
+            idx = int(target_clean) - 1
+            if 0 <= idx < len(issues):
+                matched = issues[idx]
+
+        # 2. Match by exact label or filename
+        if not matched:
+            for label, ipath in issues:
+                if target_clean.lower() in (label.lower(), ipath.name.lower()):
+                    matched = (label, ipath)
+                    break
+
+        # 3. Match by substring / keyword (e.g. "3", "03", "hard", "medium", "easy", "storage")
+        if not matched:
+            for label, ipath in issues:
+                lbl_lower = label.lower()
+                name_lower = ipath.name.lower()
+                if target_clean.lower() in lbl_lower or target_clean.lower() in name_lower:
+                    matched = (label, ipath)
+                    break
+
+        if matched:
+            label, ipath = matched
+            plan = self.load_issue(ipath)
+            self.active_issue_label = label
+            self.active_issue_path = ipath
+            console.print(f"\n[bold green]🎯 Target Issue Activated: [cyan]{label}[/cyan][/bold green]")
+            if plan.primary_goal:
+                console.print(f"   [bold]Goal:[/bold] {plan.primary_goal}")
+            if plan.acceptance_criteria:
+                console.print(f"   [bold]Acceptance Criteria:[/bold] {', '.join(plan.acceptance_criteria[:3])}")
+            console.print("")
+            return matched
+
+        console.print(f"[bold red]❌ Could not find issue matching '{target}'.[/bold red]")
+        console.print("[dim]Use /issues to see available issue numbers and names.[/dim]\n")
+        return None
+
+    def _match_issue(self, text: str) -> tuple[str, Path] | None:
+        """Helper to match user text against discovered issues."""
+        issues = self.discover_issues()
+        if not issues:
+            return None
+
+        # Check for explicit issue number mentions like "issue 3", "issue #3", "issue-3", "issue 03"
+        m = re.search(r"\bissue\s*(?:#|\-)?\s*0*([1-9]\d*)\b", text, re.IGNORECASE)
+        if m:
+            num = int(m.group(1))
+            # Try 1-based index first
+            if 1 <= num <= len(issues):
+                return issues[num - 1]
+            # Try matching filename containing that number (e.g. ISSUE_03 -> 3)
+            for label, ipath in issues:
+                if f"0{num}" in ipath.name or f"_{num}_" in ipath.name or f"_{num}." in ipath.name:
+                    return (label, ipath)
+
+        # Check for keyword matches in filename (e.g. "hard", "medium", "easy")
+        text_lower = text.lower()
+        for kw in ("hard", "medium", "easy"):
+            if re.search(rf"\b{kw}\b", text_lower):
+                for label, ipath in issues:
+                    if kw in ipath.name.lower():
+                        return (label, ipath)
+
+        # Check if any issue filename is mentioned in text
+        for label, ipath in issues:
+            if ipath.name.lower() in text_lower or label.lower() in text_lower:
+                return (label, ipath)
+
+        return None
 
     # ─── SKILLS MANAGEMENT ───────────────────────────────────────────────────
 
@@ -411,6 +581,26 @@ class ZenithREPL:
 
     # ─── DIRECT REPO ACTIONS ─────────────────────────────────────────────────
 
+    def show_session_tokens(self) -> None:
+        """Show session-wide token & cost accounting (Zenith token-efficiency visibility)."""
+        total = self.session_tokens_in + self.session_tokens_out
+        avg_in = self.session_tokens_in // max(1, self.session_model_calls)
+        avg_out = self.session_tokens_out // max(1, self.session_model_calls)
+        cache_pct = (
+            (self.session_tokens_cached / self.session_tokens_in * 100)
+            if self.session_tokens_in else 0.0
+        )
+        table = Table(title="Session Token Accounting", border_style="cyan")
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="bold green", justify="right")
+        table.add_row("Model calls", f"{self.session_model_calls}")
+        table.add_row("Input tokens", f"{self.session_tokens_in:,} ({cache_pct:.0f}% served from cache)")
+        table.add_row("Output tokens", f"{self.session_tokens_out:,}")
+        table.add_row("Total tokens", f"{total:,}")
+        table.add_row("Avg per call", f"in {avg_in:,} / out {avg_out:,}")
+        table.add_row("Estimated cost", f"${self.session_cost_usd:.4f}")
+        console.print(table)
+
     def run_tests_direct(self) -> ToolResult:
         """Run project tests directly."""
         with console.status("[bold cyan]🧪 Running test runner...[/bold cyan]", spinner="dots"):
@@ -449,7 +639,7 @@ class ZenithREPL:
 
     def render_plan(self, plan: list[dict[str, Any]]) -> None:
         """Display multi-step execution plan."""
-        table = Table(title="📋 Action Plan", border_style="cyan")
+        table = Table(title="📋 Action Plan", border_style="cyan", box=box.ROUNDED)
         table.add_column("Step", style="bold cyan", width=6)
         table.add_column("Status", width=12)
         table.add_column("Description", style="white")
@@ -574,18 +764,66 @@ class ZenithREPL:
             for se in syntax_errors[:5]:
                 console.print(f"   [red]• {se}[/red]")
 
-        # ── Step 4: Optional Issue Specification Context (if user supplied one) ──
+        # ── Step 4: Issue Specification Context ──
         optional_issue_text = ""
         discovered_issues = self.discover_issues()
-        if discovered_issues:
-            label, ipath = discovered_issues[0]
+
+        # If user explicitly mentioned an issue in query, activate it
+        matched_from_query = self._match_issue(query) if query else None
+        if matched_from_query:
+            label, ipath = matched_from_query
+            self.load_issue(ipath)
+
+        if self.active_issue and getattr(self, "active_issue_path", None) and Path(self.active_issue_path).is_file():
+            label = getattr(self, "active_issue_label", Path(self.active_issue_path).name)
             try:
-                optional_issue_text = f"\n\nOPTIONAL ISSUE SPECIFICATION ({label}):\n```\n{ipath.read_text(encoding='utf-8')[:2000]}\n```"
+                raw_issue = Path(self.active_issue_path).read_text(encoding="utf-8", errors="ignore")
+                criteria_str = ", ".join(self.active_issue.acceptance_criteria) if self.active_issue.acceptance_criteria else "Satisfy all issue requirements"
+                optional_issue_text = (
+                    f"\n\n🎯 ACTIVE TARGET ISSUE SPECIFICATION ({label}):\n"
+                    f"```\n{raw_issue[:3500]}\n```\n"
+                    f"TARGET GOAL: {self.active_issue.primary_goal}\n"
+                    f"ACCEPTANCE CRITERIA: {criteria_str}\n"
+                )
             except Exception:
                 pass
+        elif len(discovered_issues) == 1:
+            label, ipath = discovered_issues[0]
+            self.load_issue(ipath)
+            try:
+                optional_issue_text = f"\n\nOPTIONAL ISSUE SPECIFICATION ({label}):\n```\n{ipath.read_text(encoding='utf-8')[:3000]}\n```"
+            except Exception:
+                pass
+        elif len(discovered_issues) > 1:
+            issue_blocks = []
+            for idx, (label, ipath) in enumerate(discovered_issues, start=1):
+                try:
+                    content = ipath.read_text(encoding="utf-8", errors="ignore")[:2500]
+                    issue_blocks.append(f"### [Issue {idx}] {label}\n```\n{content}\n```")
+                except Exception:
+                    pass
+            all_issues_text = "\n\n".join(issue_blocks)
+            optional_issue_text = (
+                f"\n\n📋 DISCOVERED ISSUE SPECIFICATIONS ({len(discovered_issues)} issues found in repository):\n"
+                f"{all_issues_text}\n\n"
+                f"AUDIT REQUIREMENTS FOR DISCOVERED ISSUES:\n"
+                f"1. You MUST systematically inspect and evaluate the codebase against EACH of the {len(discovered_issues)} issues above.\n"
+                f"2. For each issue, verify whether the reported defect or edge-case bug is present in the code or already satisfied.\n"
+                f"3. Note: Even if unit tests pass, check if the code actually handles the conditions specified in the issues or if tests are missing checks.\n"
+                f"4. If an issue's bug is present, apply minimal patches to fix it.\n"
+                f"5. In your final report, provide an explicit per-issue status breakdown for every single issue:\n"
+                f"   - Issue 1 ({discovered_issues[0][0]}): [STATUS & VERIFICATION]\n"
+                f"   - Issue 2 ({discovered_issues[1][0]}): [STATUS & VERIFICATION]\n"
+                f"   ...\n"
+                f"Do NOT say 'all requirements met' without verifying each discovered issue individually!"
+            )
 
         # ── Step 5: Formulate Action Plan ──
-        goal = query.strip() or f"Deep audit of {profile['name']} to identify bugs, loopholes, and missing features"
+        if self.active_issue and self.active_issue.primary_goal:
+            goal = f"Resolve {getattr(self, 'active_issue_label', 'issue')}: {self.active_issue.primary_goal}"
+        else:
+            goal = query.strip() or f"Deep audit of {profile['name']} to identify bugs, loopholes, and missing features"
+
         plan = self.formulate_plan(
             goal=goal,
             suspected_files=profile["source_files"][:5],
@@ -615,10 +853,11 @@ class ZenithREPL:
             f"AUDIT INSTRUCTIONS:\n"
             f"1. Use search_code, list_dir, and read_file_range to inspect the main entry points, core logic, and key files.\n"
             f"2. Check if the project is actually working according to its intended plan and requirements.\n"
-            f"3. Find where it has bugs, runtime crashes, missing error handling, unhandled edge cases, or logic loopholes.\n"
-            f"4. If bugs or loopholes are found, apply minimal, clean patches using apply_patch / write_file.\n"
-            f"5. Run run_test_suite (or execute the project) to verify that everything works cleanly with zero regressions.\n"
-            f"6. Conclude with a complete markdown summary of issues found, files inspected, and fixes applied when done. Do not continue calling tools once your verification is complete.\n\n"
+            f"3. Even if current automated tests pass, carefully inspect the source code against the issue specifications (e.g. data loss on save, priority ordering, state timestamps, unhandled errors).\n"
+            f"4. Find where it has bugs, runtime crashes, missing error handling, unhandled edge cases, or logic loopholes.\n"
+            f"5. If bugs or loopholes are found, apply minimal, clean patches using apply_patch / write_file.\n"
+            f"6. Run run_test_suite (or execute the project) to verify that everything works cleanly with zero regressions.\n"
+            f"7. Conclude with a complete markdown summary of issues found, files inspected, and fixes applied when done. Do not continue calling tools once your verification is complete.\n\n"
             f"Start your deep-dive inspection now."
         )
 
@@ -630,53 +869,207 @@ class ZenithREPL:
 
     # ─── AUTONOMOUS TOOL EXECUTION LOOP ───────────────────────────────────────
 
+    # Prose that mimics the harness's OLD history format ("I executed tool X")
+    # or a bare JSON tool object — signs the model is narrating instead of
+    # actually calling functions.
+    TOOL_PROSE_MIMICRY_REGEX = re.compile(
+        r"^\s*(?:i\s+(?:just\s+)?(?:executed|ran|invoked|called)\s+(?:the\s+)?(?:tool|function)\b"
+        r"|invoked\s+tool\b"
+        r"|tool\s*call\s*:"
+        r"|action\s*:\s*[a-z_]+\b)",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _is_degenerate_tool_prose(cls, text: str) -> bool:
+        """Detect a reply that narrates a tool call instead of making one."""
+        stripped = (text or "").strip()
+        if not stripped or len(stripped) > 400:
+            return False
+        if cls.TOOL_PROSE_MIMICRY_REGEX.match(stripped):
+            return True
+        if stripped.startswith("{") and stripped.endswith("}") and '"tool"' in stripped:
+            try:
+                data = json.loads(stripped)
+                if isinstance(data, dict) and "tool" in data and "args" in data:
+                    return True
+            except ValueError:
+                pass
+        return False
+
+    def _make_stream_display(self, phase_label: str = "thinking"):
+        """Build streaming callbacks (on_text, on_thought) plus a finish() closer.
+
+        In a TTY this renders a transient Live panel that shows thought
+        summaries (dim) and the answer as it streams; in non-TTY mode the
+        callbacks only accumulate state and output is printed once at the end.
+        """
+        state: dict[str, Any] = {
+            "text": "",
+            "thought": "",
+            "start": time.monotonic(),
+            "saw_output": False,
+        }
+        live: Live | None = None
+        if console.is_terminal:
+            live = Live(console=console, refresh_per_second=10, transient=True, vertical_overflow="visible")
+            live.start()
+
+        spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+        def _render() -> Any:
+            elapsed = time.monotonic() - state["start"]
+            frame_idx = int(elapsed * 10) % len(spinner_frames)
+            spinner_char = spinner_frames[frame_idx]
+            blocks = []
+            thought = state["thought"].strip()
+            if thought:
+                if len(thought) > 600:
+                    thought = "…" + thought[-600:]
+                blocks.append(Text(f"  │ {thought}", style="dim italic"))
+                blocks.append(Text(""))
+            if state["text"]:
+                blocks.append(Text(state["text"][-4000:]))
+            else:
+                blocks.append(Text(f"  {spinner_char} [cyan]{phase_label}…[/cyan] [dim]({elapsed:.1f}s)[/dim]"))
+            return Group(*blocks)
+
+        def on_text(delta: str) -> None:
+            state["text"] += delta
+            state["saw_output"] = True
+            if live:
+                live.update(_render())
+
+        def on_thought(delta: str) -> None:
+            state["thought"] += delta
+            if live:
+                live.update(_render())
+
+        def finish() -> dict[str, Any]:
+            if live:
+                try:
+                    live.stop()
+                except Exception:
+                    pass
+            return state
+
+        return on_text, on_thought, finish
+
+    def _print_usage_footer(self, response: Any) -> None:
+        """Compact, elegant per-call token/cost/latency footer."""
+        if not getattr(response, "model", ""):
+            return
+        cached = f" (+{response.tokens_cached // 1000:.1f}k cached)" if getattr(response, "tokens_cached", 0) else ""
+        in_k = f"{response.tokens_in / 1000:.1f}k" if response.tokens_in >= 1000 else str(response.tokens_in)
+        console.print(
+            f"  [dim]⚡ {response.model} · {response.latency_ms / 1000:.1f}s · "
+            f"{in_k} in{cached} / {response.tokens_out} out · "
+            f"${response.cost_usd:.4f} [dim](session: ${self.session_cost_usd:.4f})[/dim][/dim]"
+        )
+
+    def _record_response_usage(self, response: Any) -> None:
+        self.session_tokens_in += getattr(response, "tokens_in", 0) or 0
+        self.session_tokens_out += getattr(response, "tokens_out", 0) or 0
+        self.session_tokens_cached += getattr(response, "tokens_cached", 0) or 0
+        self.session_cost_usd += getattr(response, "cost_usd", 0.0) or 0.0
+        self.session_model_calls += 1
+
     def _format_tool_status_line(self, tc: ToolCall, tool_res: ToolResult) -> str:
         """Format a clean, concise single-line tool status indicator like Claude Code."""
         if tool_res.error_code == ErrorCode.LOOP_DETECTED:
-            return f"  [yellow]⚠️  Loop Prevention:[/] [dim]{tc.tool} already called with these args. Skipping repeat.[/dim]"
+            return f"  [bold yellow]▲[/bold yellow] [yellow]Loop Prevention:[/] [dim]{tc.tool} already called with these args. Skipping repeat.[/dim]"
 
-        icon = "✅" if tool_res.status == ResultStatus.SUCCESS else "❌"
+        success = (tool_res.status == ResultStatus.SUCCESS)
+        icon = "[bold green]✔[/bold green]" if success else "[bold red]✖[/bold red]"
 
         if tc.tool == "read_file_range":
             fp = tc.args.get("file_path", "")
             start = tc.args.get("start_line", 1)
             end = tc.args.get("end_line", "")
-            return f"  {icon} [cyan]Read file:[/] [bold]{fp}[/bold] [dim](lines {start}-{end})[/dim]"
+            range_str = f"L{start}-{end}" if end else f"L{start}+"
+            return f"  {icon} [cyan]Read file:[/] [bold white]{fp}[/bold white] [dim]({range_str})[/dim]"
         elif tc.tool == "search_code":
             q = tc.args.get("query", "")
-            return f"  {icon} [cyan]Search code:[/] [bold]'{q}'[/bold]"
+            return f"  {icon} [cyan]Search code:[/] [bold bright_cyan]'{q}'[/bold bright_cyan]"
         elif tc.tool == "list_dir":
             p = tc.args.get("path", ".") or "."
-            return f"  {icon} [cyan]List dir:[/] [bold]{p}[/bold]"
+            return f"  {icon} [cyan]List dir:[/] [bold white]{p}[/bold white]"
         elif tc.tool in ("run_test_suite", "run_bash_sandboxed"):
             cmd_desc = tc.args.get("command", "pytest") if tc.tool == "run_bash_sandboxed" else "test suite"
-            exit_code_str = f"exit {tool_res.exit_code}" if tool_res.exit_code is not None else ""
+            if tool_res.exit_code == 0:
+                exit_code_str = "exit 0 · passed cleanly"
+            elif tool_res.exit_code is not None:
+                m = re.search(r"(\d+)\s+failed", tool_res.truncated_output or "")
+                exit_code_str = f"exit {tool_res.exit_code}" + (f" · {m.group(1)} failed" if m else "")
+            else:
+                exit_code_str = ""
             return f"  {icon} [cyan]Run {cmd_desc}:[/] [dim]({exit_code_str})[/dim]"
         elif tc.tool == "apply_patch":
             tf = tc.args.get("target_file", "")
-            return f"  {icon} [green]Applied patch:[/] [bold]{tf}[/bold]"
+            if success:
+                return f"  {icon} [green]Applied patch:[/] [bold green]{tf}[/bold green]"
+            else:
+                err = tool_res.truncated_output.splitlines()[-1] if tool_res.truncated_output else "patch failed"
+                return f"  {icon} [red]Patch rejected:[/] [bold red]{tf}[/bold red] [dim]({err[:50]})[/dim]"
         elif tc.tool == "write_file":
             fp = tc.args.get("file_path", "")
-            return f"  {icon} [green]Wrote file:[/] [bold]{fp}[/bold]"
+            return f"  {icon} [green]Wrote file:[/] [bold green]{fp}[/bold green]"
         elif tc.tool == "git_diff":
             return f"  {icon} [cyan]Inspect git diff[/cyan]"
         elif tc.tool == "get_symbol":
             sym = tc.args.get("symbol_name", "")
-            return f"  {icon} [cyan]Get symbol:[/] [bold]{sym}[/bold]"
+            return f"  {icon} [cyan]Inspect symbol:[/] [bold magenta]{sym}[/bold magenta]"
         elif tc.tool == "emit_done_candidate":
-            return f"  {icon} [bold green]Emit done candidate (verification complete)[/bold green]"
+            return f"  {icon} [bold green]Emit done candidate[/bold green] [dim](verification complete)[/dim]"
         else:
             return f"  {icon} [cyan]{tc.tool}[/cyan] [dim]({tool_res.status.value})[/dim]"
 
+    def _render_done_candidate_card(self, args: dict[str, Any], modified_files: set[str]) -> None:
+        """Render a polished resolution verification card."""
+        confidence = float(args.get("confidence", 1.0))
+        reasoning = args.get("reasoning", "")
+        evidence = args.get("evidence", [])
+        files_mod = list(args.get("files_modified", [])) or list(modified_files)
+
+        table = Table.grid(padding=(0, 2))
+        table.add_column(style="bold cyan", justify="right")
+        table.add_column(style="white")
+        table.add_row("Status", "[bold green]✔ Solution Verified & Ready[/bold green]")
+        table.add_row("Confidence", f"[bold green]{int(confidence * 100)}%[/bold green]")
+        if files_mod:
+            table.add_row("Files Modified", ", ".join(f"[bold cyan]{f}[/bold cyan]" for f in files_mod))
+        if reasoning:
+            table.add_row("Reasoning", f"[white]{reasoning}[/white]")
+        if evidence:
+            ev_list = "\n".join(f"  • [green]✔[/green] {e}" for e in evidence)
+            table.add_row("Evidence", ev_list)
+
+        console.print("")
+        console.print(Panel(table, title="[bold green]✨ Verification Milestone[/bold green]", border_style="green", box=box.ROUNDED))
+        console.print("")
+
     async def execute_autonomous_loop(self, initial_prompt: str) -> None:
-        """Multi-turn autonomous execution loop with deduplication, loop prevention, and memory."""
+        """Multi-turn autonomous execution loop with native function-calling history.
+
+        History structure uses Gemini's native protocol:
+          - model turn:   {"role": "model", "content": <commentary>, "tool_calls": [...]}
+          - observation:  {"role": "user", "tool_responses": [{"name", "args", "output", ...}]}
+        Replacing the old prose wrappers ("I executed tool X / Observation: …")
+        both saves tokens and stops weak models from imitating the prose
+        instead of emitting real function calls.
+        """
         self.history.append({"role": "user", "content": initial_prompt})
 
-        max_turns = max(getattr(self.config.agent, "max_steps", 40), 40)
+        cfg_max_steps = int(getattr(self.config.agent, "max_steps", 25) or 25)
+        max_turns = max(4, cfg_max_steps)
         current_turn = 0
         loop_detections_in_a_row = 0
+        mimicry_corrections = 0
+        empty_nudges = 0
         modified_files: set[str] = set()
-
+        finished_with_text = False
+        emit_done_pending = False
+        done_candidate_args: dict[str, Any] = {}
         system_prompt = self._build_system_prompt()
 
         while current_turn < max_turns:
@@ -714,24 +1107,52 @@ class ZenithREPL:
                 self.context_manager.summarizer.write_snapshot(self.context_manager.working_memory)
                 self.history, _ = self.semantic_compressor.compact_history(self.history, keep_recent_pairs=2)
 
-            with console.status(f"[bold cyan]🧠 Step {current_turn}/{max_turns}: Thinking & inspecting...[/bold cyan]", spinner="dots"):
+            on_text, on_thought, finish_stream = self._make_stream_display(
+                phase_label="final synthesis" if emit_done_pending else f"step {current_turn}/{max_turns} · thinking"
+            )
+            active_tools = None if emit_done_pending else self.tool_definitions
+            try:
                 response = await self.adapter.complete(
                     system_prompt=system_prompt,
-                    user_message=wm_text,
+                    user_message="" if emit_done_pending else wm_text,
                     history=self.history,
-                    tools=self.tool_definitions,
-                    temperature=0.1,
+                    tools=active_tools,
+                    temperature=0.2 if emit_done_pending else 0.1,
+                    stream=True,
+                    on_text=on_text,
+                    on_thought=on_thought,
                 )
+            finally:
+                stream_state = finish_stream()
+            self._record_response_usage(response)
+            self._print_usage_footer(response)
 
-            # Text-to-tool parsing fallback
-            if not response.tool_calls and response.content:
+            # Text-to-tool parsing fallback (tightened: explicit formats only)
+            if not emit_done_pending and not response.tool_calls and response.content:
                 parsed_calls = self.adapter._parse_tool_calls_from_text(response.content)
                 if parsed_calls:
                     response.tool_calls = parsed_calls
                     response.content = ""
 
-            # Check for tool calls
-            if response.tool_calls:
+            # ── Model made real function calls ──
+            if response.tool_calls and not emit_done_pending:
+                # Show commentary text emitted alongside the calls (Claude Code
+                # style) unless it was already streamed to the terminal.
+                if response.content and response.content.strip():
+                    if not stream_state.get("saw_output"):
+                        console.print(Markdown(response.content))
+                    else:
+                        console.print("")
+
+                self.history.append({
+                    "role": "model",
+                    "content": response.content or "",
+                    "tool_calls": list(response.tool_calls),
+                    "raw_parts": list(getattr(response, "raw_parts", []) or []),
+                })
+
+                tool_responses: list[dict[str, Any]] = []
+                emit_done = False
                 for tc in response.tool_calls:
                     if not tc.reasoning or not str(tc.reasoning).strip():
                         tc.reasoning = f"Execute {tc.tool}"
@@ -755,6 +1176,14 @@ class ZenithREPL:
                             f"Output:\n{tool_res.truncated_output}"
                         )
 
+                    tool_responses.append({
+                        "name": tc.tool,
+                        "args": tc.args or {},
+                        "output": tool_feedback,
+                        "status": tool_res.status.value,
+                        "exit_code": tool_res.exit_code,
+                    })
+
                     # ── Handle emit_done_candidate early completion ──
                     if tc.tool == "emit_done_candidate":
                         turn_rec = TurnRecord(
@@ -767,8 +1196,11 @@ class ZenithREPL:
                             exit_code=tool_res.exit_code,
                         )
                         self.context_manager.add_turn(turn_rec)
-                        self.history.append({"role": "model", "content": f"I executed tool `{tc.tool}` ({tc.reasoning})"})
-                        self.history.append({"role": "user", "content": "Done candidate accepted. Synthesize your final summary."})
+                        emit_done = True
+                        done_candidate_args = dict(tc.args or {})
+                        if tc.reasoning and not done_candidate_args.get("reasoning"):
+                            done_candidate_args["reasoning"] = tc.reasoning
+                        self._render_done_candidate_card(done_candidate_args, modified_files)
                         if self.active_plan and len(self.active_plan) > 3:
                             self.active_plan[3]["status"] = "completed"
                         break
@@ -836,15 +1268,23 @@ class ZenithREPL:
                     )
                     self.context_manager.add_turn(turn_rec)
 
-                    # Append to conversational history for next turn
-                    self.history.append({"role": "model", "content": f"I executed tool `{tc.tool}` ({tc.reasoning})"})
-                    try:
-                        obs_args = json.dumps(tc.args or {}, default=str, separators=(",", ":"))[:300]
-                    except (TypeError, ValueError):
-                        obs_args = "{}"
-                    self.history.append({"role": "user", "content": f"Observation from `{tc.tool}` args={obs_args}:\n{tool_feedback}"})
+                # Single observation turn holding every function response & prose observation
+                obs_prose = "\n\n".join(
+                    f"Observation from `{tr['name']}`:\n{tr['output']}" for tr in tool_responses
+                )
+                self.history.append({
+                    "role": "user",
+                    "content": obs_prose,
+                    "tool_responses": tool_responses,
+                })
+                if emit_done:
+                    emit_done_pending = True
+                    self.history.append({
+                        "role": "user",
+                        "content": "Done candidate accepted. Synthesize your final summary now.",
+                    })
 
-                # If model hit 3 consecutive loop detections, force termination with summary
+                # If model hit 3 consecutive loop detections, force closure
                 if loop_detections_in_a_row >= 3:
                     console.print("\n[bold yellow]⚠️  Loop limit reached. Synthesizing current findings...[/bold yellow]\n")
                     break
@@ -852,23 +1292,108 @@ class ZenithREPL:
                 # Continue next tool iteration
                 continue
 
-            # Model produced a textual answer / summary
-            if response.content:
-                console.print(f"\n[bold cyan]Zenith ❯[/bold cyan]")
+            # ── Emit done pending: handle final synthesis cleanly ──
+            if emit_done_pending:
+                if response.content and response.content.strip():
+                    console.print("\n[bold cyan]Zenith ❯[/bold cyan]")
+                    md = Markdown(response.content)
+                    console.print(md)
+                    console.print("")
+                    self.history.append({"role": "model", "content": response.content})
+                else:
+                    reasoning_text = done_candidate_args.get("reasoning", "The issue has been resolved and verified.")
+                    ev_lines = "\n".join(f"- {e}" for e in done_candidate_args.get("evidence", []))
+                    fallback_summary = f"### Issue Resolution Verified\n\n{reasoning_text}\n"
+                    if ev_lines:
+                        fallback_summary += f"\n**Verification Evidence:**\n{ev_lines}\n"
+                    console.print("\n[bold cyan]Zenith ❯[/bold cyan]")
+                    console.print(Markdown(fallback_summary))
+                    console.print("")
+                    self.history.append({"role": "model", "content": fallback_summary})
+                finished_with_text = True
+                break
+
+            # ── Model produced a textual answer ──
+            if response.content and response.content.strip():
+                # Guard: the model narrated a tool call in prose instead of
+                # actually calling it (imitating old history format). Nudge it
+                # back onto the function-calling protocol instead of accepting
+                # a dead-end "answer" that abandons the task.
+                if self._is_degenerate_tool_prose(response.content) and mimicry_corrections < 2:
+                    mimicry_corrections += 1
+                    console.print("[yellow]⚠️  Nudge: model narrated a tool call instead of executing it. Correcting…[/yellow]")
+                    self.history.append({"role": "model", "content": response.content})
+                    self.history.append({
+                        "role": "user",
+                        "content": (
+                            "CORRECTION: You described a tool call in plain text instead of actually "
+                            "calling it. Never narrate tool usage in prose. Either (a) invoke the "
+                            "function natively using the function-calling protocol, or (b) if you "
+                            "genuinely have enough information, write your final answer for the user. "
+                            "Proceed now."
+                        ),
+                    })
+                    continue
+
+                console.print("\n[bold cyan]Zenith ❯[/bold cyan]")
                 md = Markdown(response.content)
                 console.print(md)
                 console.print("")
                 self.history.append({"role": "model", "content": response.content})
+                finished_with_text = True
                 break
-            else:
-                break
+
+            # ── Empty response: nudge once or twice, then give up gracefully ──
+            if empty_nudges < 2:
+                empty_nudges += 1
+                self.history.append({
+                    "role": "user",
+                    "content": "Continue. Either call your next tool or provide your final answer now.",
+                })
+                continue
+            break
+
+        # ── Step budget exhausted without a final answer: force one synthesis ──
+        if not finished_with_text:
+            console.print("\n[yellow]⚠️  Step budget reached. Forcing final synthesis (no more tools)…[/yellow]")
+            try:
+                self.history.append({
+                    "role": "user",
+                    "content": (
+                        "SYSTEM: You have used all available tool steps. Do NOT call any more tools. "
+                        "Write your final summary of findings, changes made, and current status now."
+                    ),
+                })
+                on_text, on_thought, finish_stream = self._make_stream_display("final synthesis")
+                try:
+                    resp = await self.adapter.complete(
+                        system_prompt=system_prompt,
+                        user_message="",
+                        history=self.history,
+                        tools=None,
+                        temperature=0.2,
+                        stream=True,
+                        on_text=on_text,
+                        on_thought=on_thought,
+                    )
+                finally:
+                    finish_stream()
+                self._record_response_usage(resp)
+                self._print_usage_footer(resp)
+                if resp.content and resp.content.strip():
+                    console.print("\n[bold cyan]Zenith ❯[/bold cyan]")
+                    console.print(Markdown(resp.content))
+                    console.print("")
+                    self.history.append({"role": "model", "content": resp.content})
+            except Exception as e:
+                console.print(f"[bold red]Final synthesis failed:[/bold red] {e}")
 
         # ── Final Verification Gate (ONLY if files were modified in THIS loop execution) ──
         if modified_files:
             diff_res = git_diff(repo_root=self.repo_path)
             if diff_res.status == ResultStatus.SUCCESS and diff_res.raw_output and not diff_res.raw_output.startswith("Working tree clean"):
                 syntax = Syntax(diff_res.raw_output, "diff", theme="monokai", line_numbers=True)
-                console.print(Panel(syntax, title="Verified Git Diff", border_style="green"))
+                console.print(Panel(syntax, title="Verified Git Diff", border_style="green", box=box.ROUNDED))
 
                 final_tests = run_test_suite(repo_root=self.repo_path)
                 if final_tests.exit_code == 0:
@@ -946,20 +1471,25 @@ class ZenithREPL:
         )
 
         reply = ""
-        # If adapter has keys, call the LLM!
+        # If adapter has keys, call the LLM (streamed for a live feel)
         if self.adapter.key_pool and self.adapter.key_pool.total_keys > 0:
-            with console.status("[bold cyan]Zenith is thinking...[/bold cyan]", spinner="dots"):
-                try:
-                    response = await self.adapter.complete(
-                        system_prompt=system_prompt,
-                        user_message="",
-                        history=self.history,
-                        temperature=0.7,
-                    )
-                    if response.content and not response.content.startswith("[GEMINI_ERROR"):
-                        reply = response.content.strip()
-                except Exception:
-                    pass
+            on_text, on_thought, finish_stream = self._make_stream_display("thinking")
+            try:
+                response = await self.adapter.complete(
+                    system_prompt=system_prompt,
+                    user_message="",
+                    history=self.history,
+                    temperature=0.7,
+                    stream=True,
+                    on_text=on_text,
+                    on_thought=on_thought,
+                )
+            finally:
+                finish_stream()
+            self._record_response_usage(response)
+            self._print_usage_footer(response)
+            if response.content and "_ERROR:" not in response.content[:30]:
+                reply = response.content.strip()
 
         # Fallback if no API key or API call failed
         if not reply:
@@ -981,18 +1511,23 @@ class ZenithREPL:
         self.history.append({"role": "model", "content": reply})
 
     async def process_user_message(self, user_msg: str) -> None:
-        """Process natural language request or route to specialized engines."""
+        """Process user input. Everything goes through the LLM — no hardcoded routing.
+
+        Only a minimal set of meta-commands (exit, /issues, /skills) are handled
+        locally. ALL other messages — greetings, questions, engineering tasks,
+        bug reports, feature requests — are sent to the LLM via
+        execute_autonomous_loop. The LLM's system prompt tells it how to
+        respond conversationally vs. calling tools.
+        """
         cleaned = user_msg.strip().lower()
 
-        # 1. Exits
+        # 1. Exit commands (no API call needed)
         if cleaned in ("bye", "goodbye", "cya", "exit", "quit"):
             console.print("\n[bold cyan]Zenith ❯[/bold cyan] Goodbye! Happy coding! 🚀\n")
             self.session_active = False
             return
 
-        # 1b. Zenith speciality: compress verbose user prompts before they
-        # enter history/context. Anchors (code, paths, URLs, errors) survive
-        # verbatim; only filler, noise, and duplication are removed.
+        # 2. Prompt compression for very verbose input
         comp = await self.prompt_compressor.compress_async(user_msg)
         if comp.method != "none":
             console.print(
@@ -1002,74 +1537,91 @@ class ZenithREPL:
             user_msg = comp.compressed
             cleaned = user_msg.strip().lower()
 
-        # 2. Conversational Queries, Greetings, Identity & Folder Questions (dynamic via LLM)
-        if self._is_conversational_or_informational(user_msg):
-            await self.handle_conversational_message(user_msg)
+        # 3. Local meta-commands (no LLM needed)
+        # 3a. Issue listing
+        if any(trig in cleaned for trig in ("list issues", "show issues", "/issues")):
+            self.show_issues()
             return
 
-        # 3. Deep Codebase Audit & Autonomous Investigation Triggers
-        investigation_triggers = [
-            "find issue", "find the issue", "find issues", "find the issues",
-            "find bug", "find the bug", "find bugs", "find the bugs",
-            "find error", "find the error", "find errors", "find the errors",
-            "scan project", "scan repo", "audit project", "audit repo", "audit codebase",
-            "deep dive", "diagnose", "where are the loopholes", "find loopholes",
-            "fix issue", "fix the issue", "fix bugs", "fix the bug",
-            "fix error", "fix failing", "what are the issues", "what are the bugs",
-            "what is missing", "check if the project is working", "is the project working",
-        ]
-        if any(trig in cleaned for trig in investigation_triggers):
-            await self.autonomous_investigation(query=user_msg)
-            return
-
-        # 4. Skills Query Triggers ("what skills", "list skills", "install skill")
+        # 3b. Skill management
         if cleaned.startswith("install skill "):
             src = user_msg.strip()[14:].strip()
             self.install_skill_interactive(src)
             return
-
-        if any(trig in cleaned for trig in ("what skills", "list skills", "show skills", "installed skills")):
+        if any(trig in cleaned for trig in ("/skills", "list skills", "show skills", "installed skills")):
             self.show_skills()
             return
 
-        # 5. General autonomous coding loop
+        # 4. Issue-targeted deep investigation (if user references a discovered issue)
+        matched_issue = self._match_issue(user_msg)
+        if matched_issue:
+            label, ipath = matched_issue
+            self.select_issue(label)
+            await self.autonomous_investigation(query=f"Solve issue {label}: {user_msg}")
+            return
+
+        # 5. Full autonomous investigation for broad audit keywords
+        audit_triggers = [
+            "scan project", "scan repo", "audit project", "audit repo", "audit codebase",
+            "deep dive", "diagnose", "find loopholes", "where are the loopholes",
+            "check if the project is working", "is the project working",
+        ]
+        if any(trig in cleaned for trig in audit_triggers):
+            await self.autonomous_investigation(query=user_msg)
+            return
+
+        # 6. EVERYTHING else → LLM-powered autonomous loop
+        # The LLM decides whether to respond conversationally (greetings,
+        # identity questions, status) or invoke tools (bugs, features, edits).
         await self.execute_autonomous_loop(user_msg)
 
     # ─── API KEY SETUP & SESSION RUNNER ───────────────────────────────────────
 
     def _ensure_api_key(self) -> bool:
-        """Prompt user for Gemini API key if no keys are found in environment."""
-        if self.adapter.key_pool.total_keys > 0:
+        """Prompt user for API key if no keys are found across any provider."""
+        if getattr(self.adapter, "total_keys", 0) > 0:
             return True
 
         console.print(Panel(
-            "[yellow bold]🔑 No Google Gemini API key found![/yellow bold]\n\n"
-            "Zenith requires [bold cyan]1 free API key[/bold cyan] from Google AI Studio.\n"
-            "Get your free key in 15 seconds at: [bold link=https://aistudio.google.com/]https://aistudio.google.com/[/bold link]",
+            "[yellow bold]🔑 No AI Model API key found![/yellow bold]\n\n"
+            "Zenith supports multiple providers with automatic key pooling:\n"
+            "  • [bold cyan]DeepSeek[/bold cyan] (https://platform.deepseek.com/) -> DEEPSEEK_API_KEY\n"
+            "  • [bold cyan]Google Gemini[/bold cyan] (https://aistudio.google.com/) -> AI_API_KEY\n"
+            "  • [bold cyan]OpenAI[/bold cyan] (https://platform.openai.com/) -> OPENAI_API_KEY\n\n"
+            "You can provide multiple keys (e.g. DEEPSEEK_API_KEY_1..8) to increase rate limits!",
             border_style="yellow",
             expand=False,
         ))
 
         try:
-            key_input = input("\n👉 Paste your Gemini API key (or press Ctrl+C to cancel): ").strip()
+            key_input = input("\n👉 Paste your API key (DeepSeek / Gemini / OpenAI) or Ctrl+C to cancel: ").strip()
             if not key_input:
                 console.print("[red]No key provided. Exiting.[/red]")
                 return False
+
+            if key_input.startswith("AIza"):
+                env_var = "AI_API_KEY"
+                prov_name = "Gemini"
+            elif key_input.startswith("sk-"):
+                env_var = "DEEPSEEK_API_KEY"
+                prov_name = "DeepSeek"
+            else:
+                env_var = "DEEPSEEK_API_KEY"
+                prov_name = "DeepSeek"
 
             zenith_env_dir = Path.home() / ".zenith"
             zenith_env_dir.mkdir(parents=True, exist_ok=True)
             env_path = zenith_env_dir / ".env"
             with open(env_path, "a", encoding="utf-8") as f:
-                f.write(f"\nAI_API_KEY={key_input}\n")
+                f.write(f"\n{env_var}={key_input}\n")
             try:
                 os.chmod(env_path, 0o600)
             except OSError:
                 pass
-            os.environ["AI_API_KEY"] = key_input
+            os.environ[env_var] = key_input
 
-            from harness.adapters.key_pool import KeyPoolManager
-            self.adapter.key_pool = KeyPoolManager(keys=[key_input])
-            console.print("[bold green]✅ API key saved globally to ~/.zenith/.env! You're ready to code.[/bold green]\n")
+            self.adapter = MultiProviderAdapter(model_name=self.config.model.name)
+            console.print(f"[bold green]✅ {prov_name} API key saved globally to ~/.zenith/.env! You're ready to code.[/bold green]\n")
             return True
         except (KeyboardInterrupt, EOFError):
             console.print("\n[dim]Cancelled.[/dim]")
@@ -1118,8 +1670,23 @@ class ZenithREPL:
                     self.print_welcome_banner()
                     continue
 
-                if cmd_lower in ("/scan", "/audit", "/debug", "/issues"):
+                if cmd_lower in ("/scan", "/audit", "/debug"):
                     await self.autonomous_investigation()
+                    continue
+
+                if cmd_lower == "/issues":
+                    self.show_issues()
+                    continue
+
+                if cmd_lower.startswith("/issue"):
+                    arg = user_input[6:].strip()
+                    if not arg:
+                        self.show_issues()
+                    else:
+                        matched = self.select_issue(arg)
+                        if matched:
+                            label, ipath = matched
+                            await self.autonomous_investigation(query=f"Solve issue {label}")
                     continue
 
                 if cmd_lower == "/test":
@@ -1140,6 +1707,10 @@ class ZenithREPL:
 
                 if cmd_lower == "/context":
                     self.show_context()
+                    continue
+
+                if cmd_lower == "/tokens":
+                    self.show_session_tokens()
                     continue
 
                 if cmd_lower == "/skills":

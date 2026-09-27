@@ -11,8 +11,18 @@ from harness.skills.manager import SkillDefinition
 
 
 @pytest.fixture
-def dummy_config(tmp_path):
+def dummy_config(tmp_path, monkeypatch):
+    monkeypatch.delenv("AI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    for i in range(1, 51):
+        monkeypatch.delenv(f"AI_API_KEY_{i}", raising=False)
+        monkeypatch.delenv(f"GEMINI_API_KEY_{i}", raising=False)
+        monkeypatch.delenv(f"DEEPSEEK_API_KEY_{i}", raising=False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     config = HarnessConfig()
+    config.model.api_keys = []
+    config.model.api_key = None
     config.repo_path = str(tmp_path)
     config.telemetry.output_dir = str(tmp_path / ".harness")
     return config
@@ -27,13 +37,22 @@ def test_repl_init(dummy_config):
     assert repl.context_manager is not None
 
 
-def test_repl_casual_greeting(dummy_config):
+def test_repl_casual_greeting(dummy_config, monkeypatch):
+    """Greetings now go through execute_autonomous_loop (LLM-driven)."""
     repl = ZenithREPL(config=dummy_config)
+    called = []
+
+    async def mock_loop(prompt):
+        called.append(prompt)
+        repl.history.append({"role": "user", "content": prompt})
+        repl.history.append({"role": "model", "content": "Hello! I'm Zenith."})
+
+    monkeypatch.setattr(repl, "execute_autonomous_loop", mock_loop)
     asyncio.run(repl.process_user_message("hi"))
+    assert len(called) == 1
+    assert called[0] == "hi"
     assert len(repl.history) == 2
-    assert repl.history[0]["role"] == "user"
     assert repl.history[1]["role"] == "model"
-    assert "Zenith" in repl.history[1]["content"]
 
 
 def test_repl_casual_exit(dummy_config):
@@ -151,7 +170,8 @@ def test_context_display(dummy_config):
     repl.show_context()
 
 
-def test_natural_language_find_issues_routing(dummy_config, monkeypatch):
+def test_natural_language_audit_routing(dummy_config, monkeypatch):
+    """Broad audit keywords still route to autonomous_investigation."""
     repl = ZenithREPL(config=dummy_config)
     called = []
 
@@ -160,14 +180,12 @@ def test_natural_language_find_issues_routing(dummy_config, monkeypatch):
 
     monkeypatch.setattr(repl, "autonomous_investigation", mock_investigation)
 
-    # Various natural language queries should route to autonomous_investigation
+    # These still trigger autonomous_investigation via audit_triggers
     queries = [
-        "find the issues, find the bugs and errors in the project",
-        "find issues",
-        "find bugs in the repo",
         "scan project",
-        "diagnose and fix the issue",
-        "what are the issues?",
+        "audit repo",
+        "deep dive",
+        "diagnose",
     ]
 
     for q in queries:
@@ -184,7 +202,7 @@ def test_natural_language_skills_routing(dummy_config, monkeypatch):
     monkeypatch.setattr(repl, "show_skills", lambda: show_called.append(True))
     monkeypatch.setattr(repl, "install_skill_interactive", lambda src: install_called.append(src))
 
-    asyncio.run(repl.process_user_message("what skills do I have?"))
+    asyncio.run(repl.process_user_message("list skills"))
     assert len(show_called) == 1
 
     asyncio.run(repl.process_user_message("install skill https://github.com/example/skill"))
@@ -226,16 +244,100 @@ def test_is_conversational_or_informational(dummy_config):
     assert repl._is_conversational_or_informational("patch broken calculation") is False
 
 
-def test_conversational_name_and_folder_replies(dummy_config):
+def test_all_messages_go_through_llm(dummy_config, monkeypatch):
+    """Verify arbitrary messages (greetings, questions, tasks) all hit execute_autonomous_loop."""
+    repl = ZenithREPL(config=dummy_config)
+    called = []
+
+    async def mock_loop(prompt):
+        called.append(prompt)
+
+    monkeypatch.setattr(repl, "execute_autonomous_loop", mock_loop)
+
+    # All of these should go through the LLM, not hardcoded handlers
+    messages = [
+        "what is ur name",
+        "hi",
+        "hello",
+        "what are you doing",
+        "fix the bug in calc.py",
+        "create a new feature for user profiles",
+        "what is this folder name",
+        "improve the login performance",
+        "find bugs in the code",
+    ]
+    for msg in messages:
+        asyncio.run(repl.process_user_message(msg))
+
+    assert len(called) == len(messages)
+
+
+def test_show_and_select_issues(dummy_config, tmp_path):
+    issues_dir = tmp_path / "issues"
+    issues_dir.mkdir()
+    i1 = issues_dir / "ISSUE_01_easy.md"
+    i1.write_text("# [Bug] Sorting tasks\n## Acceptance criteria\nSort high first", encoding="utf-8")
+    i2 = issues_dir / "ISSUE_02_medium.md"
+    i2.write_text("# [Bug] Active tasks completion\n## Acceptance criteria\nFilter active", encoding="utf-8")
+    i3 = issues_dir / "ISSUE_03_hard.md"
+    i3.write_text("# [Bug] Saving tasks clobbers categories\n## Acceptance criteria\nDo not clobber", encoding="utf-8")
+
+    repl = ZenithREPL(config=dummy_config)
+    repl.show_issues()
+
+    # Select by 1-based index
+    matched3 = repl.select_issue("3")
+    assert matched3 is not None
+    assert matched3[0] == "issues/ISSUE_03_hard.md"
+    assert repl.active_issue is not None
+    assert "clobbers" in repl.active_issue.primary_goal or "Saving tasks" in repl.active_issue.primary_goal
+
+    # Select by keyword
+    matched2 = repl.select_issue("medium")
+    assert matched2 is not None
+    assert matched2[0] == "issues/ISSUE_02_medium.md"
+
+    # Select by name
+    matched1 = repl.select_issue("ISSUE_01_easy.md")
+    assert matched1 is not None
+    assert matched1[0] == "issues/ISSUE_01_easy.md"
+
+
+def test_match_issue_query(dummy_config, tmp_path):
+    issues_dir = tmp_path / "issues"
+    issues_dir.mkdir()
+    (issues_dir / "ISSUE_01_easy.md").write_text("# Easy bug", encoding="utf-8")
+    (issues_dir / "ISSUE_02_medium.md").write_text("# Medium bug", encoding="utf-8")
+    (issues_dir / "ISSUE_03_hard.md").write_text("# Hard bug", encoding="utf-8")
+
     repl = ZenithREPL(config=dummy_config)
 
-    # 1. Ask name
-    asyncio.run(repl.process_user_message("what is ur name"))
-    assert len(repl.history) == 2
-    assert "Zenith" in repl.history[1]["content"]
+    assert repl._match_issue("solve issue 3")[0] == "issues/ISSUE_03_hard.md"
+    assert repl._match_issue("fix issue #2")[0] == "issues/ISSUE_02_medium.md"
+    assert repl._match_issue("issue 1")[0] == "issues/ISSUE_01_easy.md"
+    assert repl._match_issue("solve hard issue")[0] == "issues/ISSUE_03_hard.md"
+    assert repl._match_issue("fix easy issue")[0] == "issues/ISSUE_01_easy.md"
+    assert repl._match_issue("random chat without issue") is None
 
-    # 2. Ask folder name
-    asyncio.run(repl.process_user_message("what is this flolder name"))
-    assert len(repl.history) == 4
-    assert Path(dummy_config.repo_path).name in repl.history[3]["content"]
+
+def test_repl_init_with_issue_path(dummy_config, tmp_path):
+    issue_file = tmp_path / "custom_issue.md"
+    issue_file.write_text("# Custom bug\nGoal: fix everything", encoding="utf-8")
+
+    dummy_config.issue_path = str(issue_file)
+    repl = ZenithREPL(config=dummy_config)
+
+    assert repl.active_issue is not None
+    assert repl.active_issue_path == issue_file
+
+
+def test_welcome_banner_with_issues(dummy_config, tmp_path):
+    issues_dir = tmp_path / "issues"
+    issues_dir.mkdir()
+    (issues_dir / "ISSUE_01_easy.md").write_text("# Easy bug", encoding="utf-8")
+    (issues_dir / "ISSUE_02_medium.md").write_text("# Medium bug", encoding="utf-8")
+
+    repl = ZenithREPL(config=dummy_config)
+    repl.print_welcome_banner()
+
 

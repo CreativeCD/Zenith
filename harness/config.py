@@ -39,7 +39,7 @@ class ModelConfig:
     api_key: str | None = field(default=None, repr=False)
     api_keys: list[str] = field(default_factory=list, repr=False)
     fallback_chain: list[str] = field(
-        default_factory=lambda: ["gemini-3.5-flash", "gemini-3.5-flash-lite"]
+        default_factory=lambda: ["gemini-3.5-flash", "gemini-3.6-flash"]
     )
     reasoning_effort_plan: str = "high"
     reasoning_effort_act: str = "low"
@@ -160,17 +160,30 @@ class HarnessConfig:
 
     def validate(self) -> None:
         """Validate paths, boundaries, and required environment credentials."""
-        # API Key check (unless dry_run)
+        # API Key check across all supported providers (unless dry_run)
         if not self.dry_run and not self.model.api_keys and not self.model.api_key:
-            from harness.adapters.key_pool import KeyPoolManager
-            env_keys = KeyPoolManager._load_keys_from_env()
-            if not env_keys:
+            from harness.adapters.multi_provider import discover_provider_keys
+            discovered = discover_provider_keys()
+            active_keys = (
+                discovered.get("gemini")
+                or discovered.get("deepseek")
+                or discovered.get("openai")
+                or []
+            )
+            if not active_keys:
                 raise OSError(
-                    "AI_API_KEY environment variable is not set or empty. "
-                    "Define AI_API_KEY in your environment or .env file."
+                    "No API key configured for any supported provider. "
+                    "Set DEEPSEEK_API_KEY (DeepSeek), AI_API_KEY (Gemini), or OPENAI_API_KEY (OpenAI) "
+                    "in your environment or .env file."
                 )
-            self.model.api_keys = env_keys
-            self.model.api_key = env_keys[0]
+            self.model.api_keys = active_keys
+            self.model.api_key = active_keys[0]
+
+            # Adjust default model name to match active provider if still at Gemini default
+            if not discovered.get("gemini") and discovered.get("deepseek") and self.model.name.startswith("gemini"):
+                self.model.name = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+            elif not discovered.get("gemini") and discovered.get("openai") and self.model.name.startswith("gemini"):
+                self.model.name = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 
         # GitHub token resolution
         if not self.external_skills.github_token:
@@ -275,13 +288,22 @@ def load_config(
         if repo_env.exists():
             load_dotenv(repo_env)
 
-    # Load API Keys from environment if present
-    from harness.adapters.key_pool import KeyPoolManager
-    env_keys = KeyPoolManager._load_keys_from_env()
-    if env_keys:
-        cfg.model.api_keys = env_keys
-        cfg.model.api_key = env_keys[0]
-    else:
-        cfg.model.api_key = os.environ.get("AI_API_KEY")
+    # Load API Keys from environment if present across all supported providers
+    from harness.adapters.multi_provider import discover_provider_keys
+    discovered = discover_provider_keys()
+    active_keys = (
+        discovered.get("gemini")
+        or discovered.get("deepseek")
+        or discovered.get("openai")
+        or []
+    )
+    if active_keys:
+        cfg.model.api_keys = active_keys
+        cfg.model.api_key = active_keys[0]
+        # Automatically select appropriate default model name
+        if not discovered.get("gemini") and discovered.get("deepseek") and cfg.model.name.startswith("gemini"):
+            cfg.model.name = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+        elif not discovered.get("gemini") and discovered.get("openai") and cfg.model.name.startswith("gemini"):
+            cfg.model.name = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 
     return cfg

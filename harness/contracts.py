@@ -212,6 +212,7 @@ class ToolCall(ContractBase):
     reasoning: str
     args: dict[str, Any]
     fingerprint: str = ""           # SHA256(tool + canonical(args))
+    raw_part: Any = None
 
 
 @dataclass

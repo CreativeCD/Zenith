@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from harness.adapters.base import ModelAdapter, ModelResponse
-from harness.adapters.gemini_adapter import GeminiAdapter
+from harness.adapters.multi_provider import MultiProviderAdapter
 from harness.config import HarnessConfig
 from harness.context_manager import ContextManager, TurnRecord
 from harness.contracts import (
@@ -157,13 +157,15 @@ class Orchestrator:
         model_adapter: ModelAdapter | None = None,
     ) -> None:
         self.config = config or HarnessConfig()
-        self.model_adapter = model_adapter or GeminiAdapter(
-            api_key=self.config.model.api_key,
-            api_keys=self.config.model.api_keys,
-            model_name=self.config.model.name,
-            fallback_chain=self.config.model.fallback_chain,
-            max_continuations=getattr(self.config.model, "max_continuations", 3),
-        )
+        if model_adapter is not None:
+            self.model_adapter = model_adapter
+        else:
+            self.model_adapter = MultiProviderAdapter(
+                model_name=self.config.model.name,
+                gemini_keys=self.config.model.api_keys or ([self.config.model.api_key] if self.config.model.api_key else None),
+            )
+            if hasattr(self.model_adapter, "model_name") and self.model_adapter.model_name:
+                self.config.model.name = self.model_adapter.model_name
 
         out_dir = self.config.telemetry.output_dir
         repo_p = self.config.repo_path

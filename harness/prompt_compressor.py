@@ -272,7 +272,7 @@ class PromptCompressor:
             temperature=0.0,
         )
         content = (response.content or "").strip()
-        if not content or content.startswith("[GEMINI_ERROR"):
+        if not content or response.finish_reason == "error" or "_ERROR:" in content[:30]:
             return None
 
         # Hard validation: every anchor must survive the rewrite, and the
