@@ -33,35 +33,44 @@ Zenith is a multi-agent, token-optimized, contract-driven AI coding harness desi
 - Git
 - `ripgrep` (recommended for fast indexing)
 
-### 2. Environment Setup
+### 2. Standard Evaluation Workflow (Hackathon 2026)
 ```bash
-# Clone the repository
+# 1. Clone repository
 git clone <repo-url>
 cd Zenith
 
-# Set up environment and install dependencies
+# 2. Configure API key
+export AI_API_KEY="<PROVIDED_API_KEY>"
+
+# 3. Setup environment and install dependencies
 make setup
 
-# Configure API keys
-cp .env.example .env
-# Edit .env and insert your AI_API_KEY
+# 4. Launch AI Harness (launches Claude Code-style interactive REPL/TUI)
+make run
+
+# 5. Execute evaluation test suite
+make test
 ```
 
-### 3. Execution
+### 3. Execution Options
 
 ```bash
-# Standard evaluation run (compatible with hackathon evaluation harness)
+# Batch mode on target repository and issue file:
 make run REPO_PATH=/path/to/target_repo ISSUE_PATH=/path/to/issue.txt
 
-# Or invoke directly via CLI
+# Model Provider Overrides (DeepSeek, Qwen, Gemini, OpenAI):
+make run PROVIDER=deepseek MODEL=deepseek-chat BASE_URL=https://api.deepseek.com/v1
+make run PROVIDER=qwen MODEL=qwen-2.5-coder-32b
+
+# Direct CLI execution:
 python -m harness.cli \
   --repo /path/to/target_repo \
   --issue /path/to/issue.txt \
-  --max-steps 25 \
-  --model gemini-2.5-flash \
-  --verbose
+  --provider deepseek \
+  --model deepseek-chat \
+  --trust
 
-# Fast dry-run inspection (0-token validation, tests issue parsing and prompt budgeting)
+# Fast dry-run inspection (0-token validation):
 python -m harness.cli --dry-run --repo . --issue tests/fixtures/sample_issues/issue_001.txt
 ```
 
