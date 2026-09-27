@@ -23,6 +23,11 @@ BLOCKED_PATTERNS: List[str] = [
     r">\s*[\"']?/dev/(?:sd|hd|vd|nvme)",  # Raw block device write (handles quotes, modern disk names)
     r":\(\)\s*\{.*:\|:&\s*\};:|:\(\)\{.*\|.*&.*\}",  # Fork bomb
     r"base64.*\|.*(?:sh|bash|zsh|dash|ksh)",      # Obfuscated shell execution
+    r"\b(?:nc|netcat)\b",                         # Netcat network shells/exfiltration
+    r"\b(?:ssh|scp|sftp|rsync)\b",                # Remote file transfer and shells
+    r"\b(?:nslookup|dig)\b",                      # DNS tunneling and reconnaissance
+    r"python[0-9.]*\s+-c\s+.*(?:urllib|requests|socket|http\.client)",  # Python network exfiltration
+    r"\bpip\s+install\b",                         # Arbitrary package installation in sandbox
 ]
 
 PATH_TRAVERSAL_REGEX = re.compile(r"(^|[/\\])\.\.([/\\]|$)")
@@ -49,7 +54,11 @@ def validate_path(file_path: str, repo_root: str) -> Path:
         raise ValueError(f"Path traversal detected in path: '{file_path}'")
 
     root = Path(repo_root).resolve()
-    target = (root / clean_path).resolve()
+    target = Path(clean_path)
+    if not target.is_absolute():
+        target = (root / target).resolve()
+    else:
+        target = target.resolve()
 
     try:
         # Check if target is relative to root

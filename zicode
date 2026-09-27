@@ -8,8 +8,27 @@
 #   zicode --verbose                → verbose output with token stream
 #   zicode -h                       → show help
 
-ZENITH_HOME="/Users/vamsikrishna/Dev Projects/i proj/Zenith"
-PYTHON="/opt/anaconda3/bin/python3"
+# ── Dynamic Path & Environment Resolution ───────────────────────────────────
+SOURCE="${(%):-%N}"
+[ -z "$SOURCE" ] && SOURCE="${BASH_SOURCE[0]:-$0}"
+while [ -h "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+ZENITH_HOME="${ZENITH_DIR:-$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)}"
+
+if [[ -z "$PYTHON" ]]; then
+  if [[ -f "$ZENITH_HOME/.venv/bin/python3" ]]; then
+    PYTHON="$ZENITH_HOME/.venv/bin/python3"
+  elif command -v python3 >/dev/null 2>&1; then
+    PYTHON="$(command -v python3)"
+  elif command -v python >/dev/null 2>&1; then
+    PYTHON="$(command -v python)"
+  else
+    PYTHON="/usr/bin/python3"
+  fi
+fi
 
 # ── Help ────────────────────────────────────────────────────────────────────
 if [[ "$1" == "-h" || "$1" == "--help" ]]; then
@@ -27,6 +46,7 @@ if [[ "$1" == "-h" || "$1" == "--help" ]]; then
   echo "    zicode /path/to/repo issue.txt  Run batch SWE-bench harness on custom repo"
   echo "    zicode --report                 Display latest execution report"
   echo "    zicode --dry                    Dry-run (no API calls)"
+  echo "    zicode --trust, -y              Grant workspace trust without prompting"
   echo "    zicode -h                       This help message"
   echo ""
   echo "  Output: .harness/report.md, .harness/telemetry.jsonl"
@@ -35,8 +55,12 @@ if [[ "$1" == "-h" || "$1" == "--help" ]]; then
 fi
 
 # ── Parse args ───────────────────────────────────────────────────────────────
-REPO_PATH="."
+CURRENT_DIR="$(pwd -P)"
+REPO_PATH="$CURRENT_DIR"
+ISSUE_PATH=""
 INTERACTIVE_MODE=0
+EXTRA_FLAGS=()
+POSITIONAL=0
 [[ $# -eq 0 ]] && INTERACTIVE_MODE=1
 
 while [[ $# -gt 0 ]]; do
@@ -45,11 +69,17 @@ while [[ $# -gt 0 ]]; do
       INTERACTIVE_MODE=1
       shift
       ;;
+    -y|--yes|--trust)
+      EXTRA_FLAGS+=("--trust")
+      shift
+      ;;
     --report)
-      if [[ -f "$ZENITH_HOME/.harness/report.md" ]]; then
+      if [[ -f "$CURRENT_DIR/.harness/report.md" ]]; then
+        cat "$CURRENT_DIR/.harness/report.md"
+      elif [[ -f "$ZENITH_HOME/.harness/report.md" ]]; then
         cat "$ZENITH_HOME/.harness/report.md"
       else
-        echo "No report found at $ZENITH_HOME/.harness/report.md"
+        echo "No report found at $CURRENT_DIR/.harness/report.md"
       fi
       exit 0
       ;;
@@ -80,14 +110,27 @@ while [[ $# -gt 0 ]]; do
     *)
       if [[ $POSITIONAL -eq 0 ]]; then
         if [[ -d "$1" ]]; then
-          REPO_PATH="$1"
+          REPO_PATH="$(cd "$1" && pwd -P)"
           POSITIONAL=1
         else
-          ISSUE_PATH="$1"
+          # Passed an issue file or prompt directly!
+          if [[ -f "$CURRENT_DIR/$1" ]]; then
+            ISSUE_PATH="$(cd "$(dirname "$CURRENT_DIR/$1")" && pwd -P)/$(basename "$1")"
+          elif [[ -f "$1" ]]; then
+            ISSUE_PATH="$(cd "$(dirname "$1")" && pwd -P)/$(basename "$1")"
+          else
+            ISSUE_PATH="$1"
+          fi
           POSITIONAL=2
         fi
       elif [[ $POSITIONAL -eq 1 ]]; then
-        ISSUE_PATH="$1"
+        if [[ -f "$CURRENT_DIR/$1" ]]; then
+          ISSUE_PATH="$(cd "$(dirname "$CURRENT_DIR/$1")" && pwd -P)/$(basename "$1")"
+        elif [[ -f "$1" ]]; then
+          ISSUE_PATH="$(cd "$(dirname "$1")" && pwd -P)/$(basename "$1")"
+        else
+          ISSUE_PATH="$1"
+        fi
         POSITIONAL=2
       else
         EXTRA_FLAGS+=("$1")
@@ -101,15 +144,47 @@ if [[ $INTERACTIVE_MODE -eq 1 ]]; then
   EXTRA_FLAGS+=("--interactive")
 fi
 
-# ── Load .env secrets ────────────────────────────────────────────────────────
+# ── Load .env secrets (Global ~/.zenith/.env first, then Zenith home, then repo) ─
+if [[ -f "$HOME/.zenith/.env" ]]; then
+  while IFS= read -r line; do
+    [[ "$line" =~ ^#.*$ || -z "$line" ]] && continue
+    export "$line"
+  done < "$HOME/.zenith/.env"
+fi
 if [[ -f "$ZENITH_HOME/.env" ]]; then
   while IFS= read -r line; do
     [[ "$line" =~ ^#.*$ || -z "$line" ]] && continue
     export "$line"
   done < "$ZENITH_HOME/.env"
 fi
+if [[ -f "$REPO_PATH/.env" && "$REPO_PATH" != "$ZENITH_HOME" ]]; then
+  while IFS= read -r line; do
+    [[ "$line" =~ ^#.*$ || -z "$line" ]] && continue
+    export "$line"
+  done < "$REPO_PATH/.env"
+fi
 
 KEY_COUNT=$(grep -c -E '^AI_API_KEY(_[0-9]+)?=' "$ZENITH_HOME/.env" 2>/dev/null || echo "1")
+
+# If non-interactive batch mode and no issue given, check if issue.txt exists in REPO_PATH
+if [[ $INTERACTIVE_MODE -eq 0 && -z "$ISSUE_PATH" ]]; then
+  if [[ -f "$REPO_PATH/issue.txt" ]]; then
+    ISSUE_PATH="$REPO_PATH/issue.txt"
+  fi
+fi
+
+# ── Prepare CLI Args ──────────────────────────────────────────────────────────
+export PYTHONPATH="$ZENITH_HOME:${PYTHONPATH:-}"
+
+CLI_ARGS=("--repo" "$REPO_PATH")
+if [[ -n "$ISSUE_PATH" ]]; then
+  CLI_ARGS+=("--issue" "$ISSUE_PATH")
+fi
+
+# Pass global config if target repo doesn't have harness_config.yaml
+if [[ ! -f "$REPO_PATH/harness_config.yaml" && -f "$ZENITH_HOME/harness_config.yaml" ]]; then
+  CLI_ARGS+=("--config" "$ZENITH_HOME/harness_config.yaml")
+fi
 
 # ── Run ──────────────────────────────────────────────────────────────────────
 if [[ $INTERACTIVE_MODE -eq 0 ]]; then
@@ -118,12 +193,11 @@ if [[ $INTERACTIVE_MODE -eq 0 ]]; then
   echo "  Model : gemini-3.5-flash-lite (cascade: 3.5-flash → 3.6-flash)"
   echo "  Pool  : $KEY_COUNT active keys (~$(( KEY_COUNT * 15 )) RPM capacity)"
   echo "  Repo  : $REPO_PATH"
-  echo "  Issue : $ISSUE_PATH"
+  echo "  Issue : ${ISSUE_PATH:-none}"
   [[ ${#EXTRA_FLAGS[@]} -gt 0 ]] && echo "  Flags : ${EXTRA_FLAGS[*]}"
   echo ""
 fi
 
-cd "$ZENITH_HOME" && "$PYTHON" -m harness.cli \
-  --repo "$REPO_PATH" \
-  --issue "$ISSUE_PATH" \
+cd "$REPO_PATH" && "$PYTHON" -m harness.cli \
+  "${CLI_ARGS[@]}" \
   "${EXTRA_FLAGS[@]}"

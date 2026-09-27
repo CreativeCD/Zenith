@@ -125,3 +125,27 @@ def test_model_cascade_fallback_on_all_keys_exhausted():
     res = asyncio.run(adapter.complete("system prompt", "user query"))
     assert "Success from cascade fallback" in res.content
     assert res.model == "gemini-3.5-flash"
+
+
+def test_parse_tool_calls_text_python_dict():
+    adapter = GeminiAdapter(api_key="mock_key")
+    text = "Zenith >\nInvoked tool read_file_range with args {'end_line': 250, 'file_path': 'src/taskmanager/tasks.py', 'reasoning': 'Read tasks.py to check active_tasks', 'start_line': 1}"
+    calls = adapter._parse_tool_calls_from_text(text)
+    assert len(calls) == 1
+    assert calls[0].tool == "read_file_range"
+    assert calls[0].reasoning == "Read tasks.py to check active_tasks"
+    assert calls[0].args["file_path"] == "src/taskmanager/tasks.py"
+    assert calls[0].args["start_line"] == 1
+    assert calls[0].args["end_line"] == 250
+
+
+def test_parse_tool_calls_reasoning_fallback():
+    adapter = GeminiAdapter(api_key="mock_key")
+    mock_part = MagicMock()
+    mock_part.function_call.name = "run_test_suite"
+    mock_part.function_call.args = {}
+    calls = adapter._parse_tool_calls([mock_part])
+    assert len(calls) == 1
+    assert calls[0].tool == "run_test_suite"
+    assert calls[0].reasoning is not None
+    assert len(calls[0].reasoning) > 0

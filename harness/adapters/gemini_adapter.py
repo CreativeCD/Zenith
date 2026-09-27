@@ -151,11 +151,17 @@ class GeminiAdapter:
                 fc = part.function_call
                 args = dict(fc.args) if fc.args else {}
                 reasoning = args.pop("reasoning", "")
+                if not reasoning or not str(reasoning).strip():
+                    reasoning = f"Execute {fc.name} to inspect or modify codebase"
                 tool_calls.append(ToolCall(tool=fc.name, reasoning=reasoning, args=args))
         return tool_calls
 
     def _parse_tool_calls_from_text(self, content: str) -> list[ToolCall]:
         tool_calls: list[ToolCall] = []
+        if not content:
+            return tool_calls
+
+        # 1. Standard JSON blocks
         try:
             json_blocks = re.findall(r'\{[^{}]*"tool"\s*:\s*"[^"]+[^{}]*\}', content, re.DOTALL)
             for block in json_blocks:
@@ -164,13 +170,48 @@ class GeminiAdapter:
                     if "tool" in data:
                         tool_calls.append(ToolCall(
                             tool=data["tool"],
-                            reasoning=data.get("reasoning", ""),
+                            reasoning=data.get("reasoning", f"Execute {data['tool']}"),
                             args=data.get("args", {}),
                         ))
                 except json.JSONDecodeError:
                     continue
         except Exception:
             pass
+
+        # 2. Textual invocation pattern: "Invoked tool <name> with args { ... }"
+        try:
+            import ast
+            pattern = re.compile(
+                r"(?:Invoked tool|Tool Call:?)\s*[`'\"]?(\w+)[`'\"]?\s+with args\s*(\{.*?\})",
+                re.DOTALL
+            )
+            for match in pattern.finditer(content):
+                tool_name = match.group(1)
+                raw_args_str = match.group(2)
+                try:
+                    args = ast.literal_eval(raw_args_str)
+                    if isinstance(args, dict):
+                        reasoning = args.pop("reasoning", f"Execute {tool_name}")
+                        tool_calls.append(ToolCall(
+                            tool=tool_name,
+                            reasoning=reasoning or f"Execute {tool_name}",
+                            args=args,
+                        ))
+                except Exception:
+                    try:
+                        args = json.loads(raw_args_str.replace("'", '"'))
+                        if isinstance(args, dict):
+                            reasoning = args.pop("reasoning", f"Execute {tool_name}")
+                            tool_calls.append(ToolCall(
+                                tool=tool_name,
+                                reasoning=reasoning or f"Execute {tool_name}",
+                                args=args,
+                            ))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
         return tool_calls
 
     async def complete(
@@ -226,12 +267,25 @@ class GeminiAdapter:
                 for msg in history:
                     r = msg.get("role", "user")
                     c_role = "user" if r in ("user", "human") else "model"
-                    contents.append(types.Content(role=c_role, parts=[types.Part(text=msg.get("content", msg.get("text", "")))]))
-                if user_message:
-                    contents.append(types.Content(role="user", parts=[types.Part(text=user_message)]))
+                    txt = str(msg.get("content", msg.get("text", "")))
+                    if not txt.strip():
+                        continue
+                    if contents and contents[-1].role == c_role:
+                        contents[-1].parts.append(types.Part(text=txt))
+                    else:
+                        contents.append(types.Content(role=c_role, parts=[types.Part(text=txt)]))
+                if user_message and user_message.strip():
+                    if contents and contents[-1].role == "user":
+                        contents[-1].parts.append(types.Part(text=user_message))
+                    else:
+                        contents.append(types.Content(role="user", parts=[types.Part(text=user_message)]))
+                if not contents:
+                    contents = [types.Content(role="user", parts=[types.Part(text=user_message or "Hello")])]
+                elif contents[-1].role != "user":
+                    contents.append(types.Content(role="user", parts=[types.Part(text=user_message or "Please proceed with the next step or synthesize your findings.")]))
             else:
                 contents = [
-                    types.Content(role="user", parts=[types.Part(text=user_message)])
+                    types.Content(role="user", parts=[types.Part(text=user_message or "Hello")])
                 ]
 
             # Try each key in pool for this model
@@ -268,6 +322,8 @@ class GeminiAdapter:
 
                     if not tool_calls and content_text:
                         tool_calls = self._parse_tool_calls_from_text(content_text)
+                        if tool_calls:
+                            content_text = ""
 
                     tokens_in = tokens_out = 0
                     if response.usage_metadata:
@@ -330,6 +386,8 @@ class GeminiAdapter:
                     # Re-parse tool calls if content was extended
                     if not tool_calls and content_text:
                         tool_calls = self._parse_tool_calls_from_text(content_text)
+                        if tool_calls:
+                            content_text = ""
 
                     cost_usd = self._compute_cost(current_model, tokens_in, tokens_out)
                     logger.debug(
